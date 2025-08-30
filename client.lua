@@ -395,11 +395,9 @@ CreateThread(function()
                 AddTextComponentSubstringPlayerName('Veicolo')
                 EndTextCommandSetBlipName(vehicleBlip)
             end
-            -- Force-sync blip coords and rotation to improve accuracy
+            -- Force-sync blip coords to improve accuracy (no rotation)
             local vcoords = GetEntityCoords(veh)
             SetBlipCoords(vehicleBlip, vcoords.x, vcoords.y, vcoords.z)
-            local heading = GetEntityHeading(veh)
-            SetBlipRotation(vehicleBlip, math.floor(heading))
         elseif vehicleBlip and DoesBlipExist(vehicleBlip) then
             RemoveBlip(vehicleBlip)
             vehicleBlip = nil
