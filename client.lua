@@ -26,6 +26,37 @@ local function notify(msg)
     EndTextCommandThefeedPostTicker(false, false)
 end
 
+-- =========================
+-- DRIVING HELPERS (ADAPTIVE + AVOIDANCE)
+-- =========================
+local function adaptiveSpeed(dist)
+    -- Return a cautious speed based on distance to target (meters)
+    if dist > 40.0 then return DRIVE_SPEED end
+    if dist > 25.0 then return 20.0 end
+    if dist > 12.0 then return 14.0 end
+    if dist > 6.0 then return 8.0 end
+    return 4.0
+end
+
+local function vehicleAhead(veh)
+    if not (veh and DoesEntityExist(veh)) then return false end
+    local from = GetOffsetFromEntityInWorldCoords(veh, 0.0, 1.5, 0.5)
+    local to = GetOffsetFromEntityInWorldCoords(veh, 0.0, 18.0, 0.5)
+    local ray = StartShapeTestCapsule(from.x, from.y, from.z, to.x, to.y, to.z, 2.0, 10, veh, 7)
+    local _, hit, _, _, entityHit = GetShapeTestResult(ray)
+    return (hit == 1) and DoesEntityExist(entityHit) and IsEntityAVehicle(entityHit) and entityHit ~= veh
+end
+
+local function obstacleAhead(veh)
+    if not (veh and DoesEntityExist(veh)) then return false end
+    local from = GetOffsetFromEntityInWorldCoords(veh, 0.0, 1.5, 0.5)
+    local to = GetOffsetFromEntityInWorldCoords(veh, 0.0, 14.0, 0.5)
+    local ray = StartShapeTestCapsule(from.x, from.y, from.z, to.x, to.y, to.z, 2.0, 12, veh, 7)
+    local _, hit, _, _, entityHit = GetShapeTestResult(ray)
+    if hit ~= 1 or not DoesEntityExist(entityHit) then return false end
+    return IsEntityAVehicle(entityHit) or IsPedAPlayer(entityHit) or IsEntityAPed(entityHit)
+end
+
 RegisterNetEvent('autopilot:notify', function(msg)
     notify(msg)
 end)
@@ -82,6 +113,9 @@ local function spawnDriver(veh)
     SetPedKeepTask(ped, true)
     SetEntityInvincible(ped, true)
     SetEntityVisible(ped, false, false)
+    -- Safer driving profile
+    SetDriverAbility(ped, 0.6)
+    SetDriverAggressiveness(ped, 0.0)
     return ped
 end
 
@@ -203,12 +237,25 @@ local function summonVehicle()
                 -- Fallback to player coords if no node found
                 TaskVehicleDriveToCoordLongrange(driverPed, veh, pcoords.x, pcoords.y, pcoords.z, DRIVE_SPEED, DRIVING_STYLE, 20.0)
             end
+            -- Adaptive cruise and obstacle avoidance
+            local dist = #(pcoords - GetEntityCoords(veh))
+            local spd = adaptiveSpeed(dist)
+            SetDriveTaskCruiseSpeed(driverPed, spd)
+            if vehicleAhead(veh) or obstacleAhead(veh) then
+                -- Strong early brake if obstacle detected ahead
+                SetDriveTaskCruiseSpeed(driverPed, 3.0)
+                TaskVehicleTempAction(driverPed, veh, 27, 1200) -- brake stronger/longer
+            end
+            -- Hard stop if too close
+            if dist <= 2.5 then
+                TaskVehicleTempAction(driverPed, veh, 27, 1500)
+            end
             if #(pcoords - GetEntityCoords(veh)) <= FOLLOW_DISTANCE then
                 summoning = false
                 following = true
                 notify('Ti sto seguendo.')
             end
-            Wait(1000)
+            Wait(600)
         end
         while following do
             local ped = PlayerPedId()
@@ -225,8 +272,21 @@ local function summonVehicle()
                 TaskVehicleDriveToCoordLongrange(driverPed, veh, pcoords.x, pcoords.y, pcoords.z, DRIVE_SPEED, DRIVING_STYLE, 20.0)
             end
             -- If close enough, keep speed minimal
-            if #(pcoords - GetEntityCoords(veh)) <= FOLLOW_DISTANCE then
-                TaskVehicleTempAction(driverPed, veh, 27, 1000) -- brake
+            local dist = #(pcoords - GetEntityCoords(veh))
+            if dist <= FOLLOW_DISTANCE then
+                TaskVehicleTempAction(driverPed, veh, 27, 1200) -- brake
+            end
+            -- Adaptive cruise and obstacle avoidance
+            local spd = adaptiveSpeed(dist)
+            -- Cap speed during following for safety
+            local spdCap = math.min(spd, 12.0)
+            SetDriveTaskCruiseSpeed(driverPed, spdCap)
+            if vehicleAhead(veh) or obstacleAhead(veh) then
+                SetDriveTaskCruiseSpeed(driverPed, 3.0)
+                TaskVehicleTempAction(driverPed, veh, 27, 1200)
+            end
+            if dist <= 2.5 then
+                TaskVehicleTempAction(driverPed, veh, 27, 1500)
             end
             Wait(600)
         end
