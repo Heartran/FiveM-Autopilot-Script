@@ -240,9 +240,39 @@ RegisterCommand('autopilot', function()
     end
 end, false)
 
+-- Open ESX default menu instead of custom NUI
+local function openMenu()
+    -- Define menu items mapped to existing commands
+    local elements = {
+        { label = 'Summon', value = 'autopilot' },
+        { label = 'Stop & Park', value = 'autopilot_stop' },
+        { label = 'Park', value = 'autopilot_park' },
+        { label = 'Clear', value = 'autopilot_clear' },
+    }
+
+    if ESX and ESX.UI and ESX.UI.Menu then
+        ESX.UI.Menu.CloseAll()
+        ESX.UI.Menu.Open('default', GetCurrentResourceName(), 'autopilot_menu', {
+            title = 'Autopilota',
+            align = 'top-left',
+            elements = elements,
+        }, function(data, menu)
+            local cmd = data.current and data.current.value
+            if cmd then
+                ExecuteCommand(cmd)
+            end
+        end, function(data, menu)
+            menu.close()
+        end)
+    else
+        -- Fallback: execute the primary action if ESX menu is unavailable
+        ExecuteCommand('autopilot')
+        notify('ESX menu non disponibile, eseguo Summon come fallback.')
+    end
+end
+
 RegisterCommand('autopilot_menu', function()
-    SetNuiFocus(true, true)
-    SendNUIMessage({ action = 'toggle', show = true })
+    openMenu()
 end, false)
 
 RegisterKeyMapping('autopilot_menu', 'Menu Autopilota', 'keyboard', MENU_KEY)
@@ -269,18 +299,7 @@ RegisterCommand('autopilot_clear', function()
     notify('Veicolo personale resettato.')
 end, false)
 
-RegisterNUICallback('close', function(_, cb)
-    SetNuiFocus(false, false)
-    SendNUIMessage({ action = 'toggle', show = false })
-    cb('ok')
-end)
-
-RegisterNUICallback('command', function(data, cb)
-    if data and data.cmd then
-        ExecuteCommand(data.cmd)
-    end
-    cb('ok')
-end)
+-- Removed custom NUI callbacks; using ESX default menu
 
 -- Maintain a blip on the personal vehicle if it exists
 CreateThread(function()
