@@ -6,7 +6,7 @@
 local MENU_KEY = 'F4'
 local DRIVE_SPEED = 28.0 -- m/s (~100km/h)
 local DRIVING_STYLE = 786603 -- road/normal
-local FOLLOW_DISTANCE = 3.0
+local FOLLOW_DISTANCE = 0.5
 
 -- =========================
 -- STATE
@@ -35,7 +35,7 @@ local function adaptiveSpeed(dist)
     if dist > 25.0 then return 20.0 end
     if dist > 12.0 then return 14.0 end
     if dist > 6.0 then return 8.0 end
-    return 4.0
+    return 1.0
 end
 
 local function vehicleAhead(veh)
@@ -295,7 +295,7 @@ local function summonVehicle()
                 TaskVehicleTempAction(driverPed, veh, 27, 1200) -- brake stronger/longer
             end
             -- Hard stop if too close
-            if dist <= 2.5 then
+            if dist <= 0.5 then
                 TaskVehicleTempAction(driverPed, veh, 27, 1500)
             end
             if #(pcoords - GetEntityCoords(veh)) <= FOLLOW_DISTANCE then
@@ -333,7 +333,7 @@ local function summonVehicle()
                 SetDriveTaskCruiseSpeed(driverPed, 3.0)
                 TaskVehicleTempAction(driverPed, veh, 27, 1200)
             end
-            if dist <= 2.5 then
+            if dist <= 0.5 then
                 TaskVehicleTempAction(driverPed, veh, 27, 1500)
             end
             Wait(600)
