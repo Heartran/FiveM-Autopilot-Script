@@ -2,9 +2,8 @@
 -- The script is intentionally simple to maximise reliability.
 
 -- =========================
--- CONFIGURATION
 -- =========================
-local KEY_DEFAULT = 'F6'
+local MENU_KEY = 'F4'
 local DRIVE_SPEED = 28.0 -- m/s (~100km/h)
 local DRIVING_STYLE = 786603 -- road/normal
 local FOLLOW_DISTANCE = 8.0
@@ -119,8 +118,36 @@ local function findVehicle()
     return nil
 end
 
-local function stopAutopilot()
+local function parkVehicle()
     local veh = findVehicle()
+    if not veh then return end
+
+    if not driverPed or not DoesEntityExist(driverPed) then
+        driverPed = spawnDriver(veh)
+    end
+
+    summoning = false
+    following = false
+
+    local coords = GetEntityCoords(veh)
+    local found, x, y, z, heading = GetClosestVehicleNodeWithHeading(coords.x, coords.y, coords.z, 1, 3.0, 0)
+    if found then
+        TaskVehiclePark(driverPed, veh, x, y, z, heading, 0, 20.0, true)
+    else
+        TaskVehicleTempAction(driverPed, veh, 27, 6000)
+    end
+
+    local timeout = GetGameTimer() + 15000
+    while GetGameTimer() < timeout and not IsVehicleStopped(veh) do
+        Wait(500)
+    end
+end
+
+local function stopAutopilot(parkFirst)
+    local veh = findVehicle()
+    if parkFirst then
+        parkVehicle()
+    end
     if driverPed and DoesEntityExist(driverPed) then
         ClearPedTasks(driverPed)
         if veh and DoesEntityExist(veh) then
@@ -213,11 +240,22 @@ RegisterCommand('autopilot', function()
     end
 end, false)
 
-RegisterKeyMapping('autopilot', 'Autopilota personale', 'keyboard', KEY_DEFAULT)
+RegisterCommand('autopilot_menu', function()
+    SetNuiFocus(true, true)
+    SendNUIMessage({ action = 'toggle', show = true })
+end, false)
+
+RegisterKeyMapping('autopilot_menu', 'Menu Autopilota', 'keyboard', MENU_KEY)
 
 RegisterCommand('autopilot_stop', function()
+    stopAutopilot(true)
+    notify('Autopilota fermato e veicolo parcheggiato.')
+end, false)
+
+RegisterCommand('autopilot_park', function()
+    parkVehicle()
     stopAutopilot()
-    notify('Autopilota fermato.')
+    notify('Veicolo parcheggiato.')
 end, false)
 
 RegisterCommand('autopilot_clear', function()
@@ -230,6 +268,19 @@ RegisterCommand('autopilot_clear', function()
     end
     notify('Veicolo personale resettato.')
 end, false)
+
+RegisterNUICallback('close', function(_, cb)
+    SetNuiFocus(false, false)
+    SendNUIMessage({ action = 'toggle', show = false })
+    cb('ok')
+end)
+
+RegisterNUICallback('command', function(data, cb)
+    if data and data.cmd then
+        ExecuteCommand(data.cmd)
+    end
+    cb('ok')
+end)
 
 -- Maintain a blip on the personal vehicle if it exists
 CreateThread(function()

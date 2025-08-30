@@ -25,7 +25,7 @@
 
 ## Attivazione (Input)
 
-- **Tasto F6:** Attiva o disattiva l’autopilota.  
+- **Tasto F4:** Apre il menu dell'autopilota con tutti i comandi.
 - **Comandi aggiuntivi:** `/autopilot`, `/autopilot_stop`, `/autopilot_clear`.  
 - **Condizioni:** Richiede un veicolo personale registrato.
 
