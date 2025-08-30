@@ -61,6 +61,17 @@ RegisterNetEvent('autopilot:notify', function(msg)
     notify(msg)
 end)
 
+-- Add chat suggestions for commands (requires default chat resource)
+CreateThread(function()
+    -- Delay to allow chat resource to initialize
+    Wait(1000)
+    TriggerEvent('chat:addSuggestion', '/autopilot', 'Richiama il veicolo personale o registra quello attuale')
+    TriggerEvent('chat:addSuggestion', '/autopilot_menu', 'Apri il menu autopilota')
+    TriggerEvent('chat:addSuggestion', '/autopilot_stop', 'Ferma l\'autopilota e parcheggia')
+    TriggerEvent('chat:addSuggestion', '/autopilot_park', 'Parcheggia il veicolo a bordo strada')
+    TriggerEvent('chat:addSuggestion', '/autopilot_clear', 'Resetta il veicolo personale')
+end)
+
 local function EnumerateEntities(init, move, finish)
     return coroutine.wrap(function()
         local iter, id = init()
@@ -344,7 +355,7 @@ local function registerVehicle()
     notify(('Veicolo %s registrato.'):format(plate))
 end
 
-RegisterCommand('autopilot', function()
+RegisterCommand('autopilot', function(source, args, raw)
     pullPersonal()
     Wait(200)
     if personal then
@@ -385,24 +396,24 @@ local function openMenu()
     end
 end
 
-RegisterCommand('autopilot_menu', function()
+RegisterCommand('autopilot_menu', function(source, args, raw)
     openMenu()
 end, false)
 
 RegisterKeyMapping('autopilot_menu', 'Menu Autopilota', 'keyboard', MENU_KEY)
 
-RegisterCommand('autopilot_stop', function()
+RegisterCommand('autopilot_stop', function(source, args, raw)
     stopAutopilot(true)
     notify('Autopilota fermato e veicolo parcheggiato.')
 end, false)
 
-RegisterCommand('autopilot_park', function()
+RegisterCommand('autopilot_park', function(source, args, raw)
     parkVehicle()
     stopAutopilot()
     notify('Veicolo parcheggiato.')
 end, false)
 
-RegisterCommand('autopilot_clear', function()
+RegisterCommand('autopilot_clear', function(source, args, raw)
     stopAutopilot()
     personal = nil
     TriggerServerEvent('autopilot:clearPersonal')
