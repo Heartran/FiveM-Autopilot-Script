@@ -64,11 +64,33 @@ local ActiveSummon = false
 local ActiveFollow = false   -- nuovo: modalità “seguimi”
 local DriverPed = nil
 local DebugEnabled = false
+local SuperDebugEnabled = false
 
 local function Debug(msg)
-    if DebugEnabled then
-        Notify(('[DEBUG] %s'):format(msg))
+    if SuperDebugEnabled then
+        print(('[SUPERDEBUG] %s'):format(msg))
+    elseif DebugEnabled then
+        local out = ('[DEBUG] %s'):format(msg)
+        print(out)
+        Notify(out)
     end
+end
+
+local function StartSuperDebugThread()
+    CreateThread(function()
+        while SuperDebugEnabled do
+            local veh = Personal and NetworkGetEntityFromNetworkId(Personal.netId or -1)
+            local x, y, z, speed = 0.0, 0.0, 0.0, 0.0
+            if veh and veh ~= 0 then
+                local coords = GetEntityCoords(veh)
+                x, y, z = coords.x, coords.y, coords.z
+                speed = GetEntitySpeed(veh)
+            end
+            Debug(('STATE: summon=%s follow=%s driver=%s veh=%s coords=%.2f %.2f %.2f speed=%.2f'):format(
+                tostring(ActiveSummon), tostring(ActiveFollow), tostring(DriverPed), tostring(veh), x, y, z, speed))
+            Wait(1000)
+        end
+    end)
 end
 
 -- IPC server → client callback
@@ -82,6 +104,7 @@ end
 
 -- Richiama stato dal server
 local function PullPersonalSync()
+    Debug('PullPersonalSync triggered')
     TriggerServerEvent('autopilot:getPersonal')
 end
 
@@ -89,16 +112,20 @@ end
 -- DRIVER IA
 -- =========================
 local function EnsureModelLoaded(hash)
+    Debug('EnsureModelLoaded: ' .. tostring(hash))
     RequestModel(hash)
     local tries = 0
     while not HasModelLoaded(hash) and tries < 200 do
         Wait(10)
         tries = tries + 1
     end
-    return HasModelLoaded(hash)
+    local loaded = HasModelLoaded(hash)
+    Debug(('EnsureModelLoaded result %s'):format(tostring(loaded)))
+    return loaded
 end
 
 local function SpawnDriverInVehicle(veh)
+    Debug('SpawnDriverInVehicle: ' .. tostring(veh))
     local model = joaat('s_m_m_scientist_01')
     RequestModel(model)
     local t = 0; while not HasModelLoaded(model) and t < 200 do Wait(10) t = t + 1 end
@@ -179,6 +206,7 @@ local function SpawnDriverInVehicle(veh)
     SetVehicleForwardSpeed(veh, 1.0)
 
     SetModelAsNoLongerNeeded(model)
+    Debug('SpawnDriverInVehicle completed')
     return ped
 end
 
@@ -194,6 +222,7 @@ local function TakeControl(entity, maxTries)
 end
 
 local function StopAndDismissDriver(veh, ped)
+    Debug('StopAndDismissDriver called')
     if ped and DoesEntityExist(ped) then
         ClearPedTasks(ped)
         TaskVehicleTempAction(ped, veh, 1, 1000) -- frena un attimo
@@ -228,6 +257,7 @@ local function FindVehicleFromPersonal()
 end
 
 local function SummonVehicleToPlayer()
+    Debug('SummonVehicleToPlayer called')
     if ActiveSummon or ActiveFollow then
         Notify('L’autopilota è già attivo.')
         return
@@ -354,6 +384,7 @@ end
 -- REGISTRAZIONE VEICOLO
 -- =========================
 local function TryRegisterCurrentVehicle()
+    Debug('TryRegisterCurrentVehicle called')
     local ped = PlayerPedId()
     if not IsPedInAnyVehicle(ped, false) or GetPedInVehicleSeat(GetVehiclePedIsIn(ped, false), -1) ~= ped then
         Notify('Siediti al posto di guida di un veicolo per registrarlo come personale.')
@@ -370,6 +401,7 @@ local function TryRegisterCurrentVehicle()
     SetEntityAsMissionEntity(veh, true, false)
     TriggerServerEvent('autopilot:registerPersonal', netId, plate)
     Personal = { netId = netId, plate = plate }
+    Debug(('Registered personal vehicle %s (netId %s)'):format(plate, netId))
 end
 
 -- =========================
@@ -411,6 +443,18 @@ RegisterCommand('autopilot_debug', function(source, args, raw)
         else
             Debug('No vehicle entity found for current Personal')
         end
+    end
+end, false)
+
+-- Super debug: stampa informazioni estese in console
+RegisterCommand('autopilot_superdebug', function(source, args, raw)
+    local onoff = args and args[1]
+    if onoff == 'on' then SuperDebugEnabled = true
+    elseif onoff == 'off' then SuperDebugEnabled = false
+    else SuperDebugEnabled = not SuperDebugEnabled end
+    Notify(('SuperDebug: %s'):format(SuperDebugEnabled and 'ON' or 'OFF'))
+    if SuperDebugEnabled then
+        StartSuperDebugThread()
     end
 end, false)
 
