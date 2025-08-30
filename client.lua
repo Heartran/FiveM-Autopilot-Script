@@ -445,11 +445,11 @@ end, false)
 
 -- Removed custom NUI callbacks; using ESX default menu
 
--- Maintain a blip on the personal vehicle if it exists
+-- Maintain a blip on the personal vehicle if it exists (persistent)
 CreateThread(function()
     local lastSeen = 0
     local lastCoords = nil
-    local vanishTimeout = 15000 -- ms to keep blip after temporary loss
+    local vanishTimeout = 15000 -- kept for reference; we no longer use it to remove the blip
     local lastReq = 0
     while true do
         local now = GetGameTimer()
@@ -501,7 +501,8 @@ CreateThread(function()
                     lastSeen = now -- we simulate continuously
                 end
             end
-            if (recentlySeen or lastState) and lastCoords then
+            -- Make blip persistent: if we have any coords (recent or predicted), keep showing
+            if ((recentlySeen or lastState) and lastCoords) or lastCoords then
                 if not vehicleBlip or not DoesBlipExist(vehicleBlip) then
                     -- Recreate a free blip at last known coords
                     vehicleBlip = AddBlipForCoord(lastCoords.x, lastCoords.y, lastCoords.z)
@@ -518,17 +519,21 @@ CreateThread(function()
                     SetBlipCoords(vehicleBlip, lastCoords.x, lastCoords.y, lastCoords.z)
                 end
             else
-                -- Too long without the vehicle: remove blip
-                if vehicleBlip and DoesBlipExist(vehicleBlip) then
-                    RemoveBlip(vehicleBlip)
-                end
-                vehicleBlip = nil
-                lastCoords = nil
+                -- If no data available yet, keep trying without removing existing blip
+                -- Only remove blip if personal entry is cleared elsewhere
             end
         end
 
         Wait(300)
     end
+end)
+
+-- On resource start, pull personal and last server state so the blip can appear immediately
+CreateThread(function()
+    Wait(1000)
+    pullPersonal()
+    Wait(200)
+    TriggerServerEvent('autopilot:getVehState')
 end)
 
 -- Periodically push vehicle state to server for persistence/simulation
