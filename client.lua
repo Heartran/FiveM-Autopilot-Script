@@ -1,3 +1,21 @@
+-- Predict vehicle position based on last known state and elapsed time (dead-reckoning)
+local function predictFromState(state, now)
+    if not state then return nil end
+    local dt = math.max(0.0, (now - (state.lastSeen or now)) / 1000.0)
+    local px = (state.x or 0.0) + (state.vx or 0.0) * dt
+    local py = (state.y or 0.0) + (state.vy or 0.0) * dt
+    local pz = (state.z or 0.0) + (state.vz or 0.0) * dt
+    return { x = px, y = py, z = pz, heading = state.heading or 0.0 }
+end
+
+-- Receive last known vehicle state from server
+RegisterNetEvent('autopilot:cbVehState', function(state)
+    if state then
+        state.receivedAt = GetGameTimer()
+    end
+    lastState = state
+end)
+
 -- Autopilot rewrite: register personal vehicle and summon it to follow the player.
 -- The script is intentionally simple to maximise reliability.
 
@@ -16,6 +34,7 @@ local driverPed = nil
 local summoning = false
 local following = false
 local vehicleBlip = nil
+local lastState = nil -- { x,y,z, heading, vx,vy,vz, lastSeen, receivedAt }
 
 -- =========================
 -- UTILS
@@ -428,9 +447,16 @@ end, false)
 
 -- Maintain a blip on the personal vehicle if it exists
 CreateThread(function()
+    local lastSeen = 0
+    local lastCoords = nil
+    local vanishTimeout = 15000 -- ms to keep blip after temporary loss
+    local lastReq = 0
     while true do
-        local veh = personal and findVehicle()
-        if veh and DoesEntityExist(veh) then
+        local now = GetGameTimer()
+        local veh = personal and findVehicle() or 0
+
+        if veh ~= 0 and DoesEntityExist(veh) then
+            -- Ensure blip exists and is attached to entity
             if not vehicleBlip or not DoesBlipExist(vehicleBlip) then
                 vehicleBlip = AddBlipForEntity(veh)
                 SetBlipSprite(vehicleBlip, 225) -- car
@@ -443,13 +469,83 @@ CreateThread(function()
                 AddTextComponentSubstringPlayerName('Veicolo')
                 EndTextCommandSetBlipName(vehicleBlip)
             end
-            -- Force-sync blip coords to improve accuracy (no rotation)
+            -- Update coordinates and last seen
             local vcoords = GetEntityCoords(veh)
-            SetBlipCoords(vehicleBlip, vcoords.x, vcoords.y, vcoords.z)
-        elseif vehicleBlip and DoesBlipExist(vehicleBlip) then
-            RemoveBlip(vehicleBlip)
-            vehicleBlip = nil
+            lastCoords = vcoords
+            lastSeen = now
+            if vehicleBlip and DoesBlipExist(vehicleBlip) then
+                SetBlipCoords(vehicleBlip, vcoords.x, vcoords.y, vcoords.z)
+            end
+            -- Update lastState for smoother predictions if needed
+            local vx, vy, vz = table.unpack(GetEntityVelocity(veh))
+            local heading = GetEntityHeading(veh)
+            lastState = {
+                x = vcoords.x, y = vcoords.y, z = vcoords.z,
+                heading = heading,
+                vx = vx, vy = vy, vz = vz,
+                lastSeen = now,
+                receivedAt = now,
+            }
+        else
+            -- Vehicle momentarily not found (streaming/despawn). Keep blip for a bit.
+            local recentlySeen = (now - lastSeen) <= vanishTimeout
+            -- Periodically request server state to keep simulation fresh
+            if now - lastReq > 2000 then
+                TriggerServerEvent('autopilot:getVehState')
+                lastReq = now
+            end
+            if lastState then
+                local pred = predictFromState(lastState, now)
+                if pred then
+                    lastCoords = vector3(pred.x, pred.y, pred.z)
+                    lastSeen = now -- we simulate continuously
+                end
+            end
+            if (recentlySeen or lastState) and lastCoords then
+                if not vehicleBlip or not DoesBlipExist(vehicleBlip) then
+                    -- Recreate a free blip at last known coords
+                    vehicleBlip = AddBlipForCoord(lastCoords.x, lastCoords.y, lastCoords.z)
+                    SetBlipSprite(vehicleBlip, 225)
+                    SetBlipAsFriendly(vehicleBlip, true)
+                    SetBlipScale(vehicleBlip, 0.8)
+                    SetBlipHighDetail(vehicleBlip, true)
+                    SetBlipDisplay(vehicleBlip, 6)
+                    SetBlipPriority(vehicleBlip, 10)
+                    BeginTextCommandSetBlipName('STRING')
+                    AddTextComponentSubstringPlayerName('Veicolo')
+                    EndTextCommandSetBlipName(vehicleBlip)
+                else
+                    SetBlipCoords(vehicleBlip, lastCoords.x, lastCoords.y, lastCoords.z)
+                end
+            else
+                -- Too long without the vehicle: remove blip
+                if vehicleBlip and DoesBlipExist(vehicleBlip) then
+                    RemoveBlip(vehicleBlip)
+                end
+                vehicleBlip = nil
+                lastCoords = nil
+            end
         end
+
         Wait(300)
+    end
+end)
+
+-- Periodically push vehicle state to server for persistence/simulation
+CreateThread(function()
+    while true do
+        if personal then
+            local veh = findVehicle()
+            if veh ~= 0 and DoesEntityExist(veh) then
+                local vcoords = GetEntityCoords(veh)
+                local heading = GetEntityHeading(veh)
+                local vx, vy, vz = table.unpack(GetEntityVelocity(veh))
+                local plate = personal and personal.plate or nil
+                if plate and plate ~= '' then
+                    TriggerServerEvent('autopilot:updateVehState', plate, vcoords.x, vcoords.y, vcoords.z, heading, vx, vy, vz, GetGameTimer())
+                end
+            end
+        end
+        Wait(500)
     end
 end)
