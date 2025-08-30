@@ -6,7 +6,7 @@ local SUMMON_RANGE_START_FOLLOW = 15.0   -- quando è a questa distanza, passa a
 local FOLLOW_MIN_DISTANCE = 8.0          -- distanza “di cortesia” dietro di te
 local DRIVE_SPEED = 28.0                 -- m/s (~100 km/h)
 local DRIVING_STYLE = 786603             -- stile di guida sicuro/stradale
-local MAKE_DRIVER_INVISIBLE = true
+local MAKE_DRIVER_INVISIBLE = false -- DEBUG: disabilita invisibilità temporaneamente
 local MAKE_DRIVER_INVINCIBLE = true
 local HONK_ON_FINISH = false             -- non serve più il clacson, lasciamolo spento
 local RETASK_INTERVAL_MS = 2000          -- ogni quanto riaffido il compito di follow
@@ -150,6 +150,7 @@ local function SpawnDriverInVehicle(veh)
     -- ped sane defaults
     SetEntityAsMissionEntity(ped, true, true)
     SetPedIntoVehicle(ped, veh, -1)
+    Debug('Ped inserito nel veicolo (driver seat)')
     SetBlockingOfNonTemporaryEvents(ped, true)
     SetPedCanBeDraggedOut(ped, false)
     SetPedStayInVehicleWhenJacked(ped, true)
@@ -254,10 +255,17 @@ local function SummonVehicleToPlayer()
     SetVehicleDoorsLocked(veh, 1)
     SetVehicleEngineOn(veh, true, true, false)
 
+
     DriverPed = SpawnDriverInVehicle(veh)
     if not DriverPed then
         Notify('Driver IA non creato.')
         return
+    end
+    Debug('DriverPed creato: ' .. tostring(DriverPed))
+    if not IsPedInVehicle(DriverPed, veh, false) then
+        Debug('ATTENZIONE: Il ped non è nel veicolo dopo SpawnDriverInVehicle!')
+    else
+        Debug('Il ped è correttamente nel veicolo.')
     end
 
     ActiveSummon = true
@@ -278,6 +286,7 @@ local function SummonVehicleToPlayer()
             SetDriveTaskDrivingStyle(DriverPed, DRIVING_STYLE)
             SetDriveTaskMaxCruiseSpeed(DriverPed, DRIVE_SPEED)
             TaskVehicleDriveToCoordLongrange(DriverPed, veh, pcoords.x, pcoords.y, pcoords.z, DRIVE_SPEED, DRIVING_STYLE, 20.0)
+            Debug('TaskVehicleDriveToCoordLongrange assegnato: ' .. string.format('%.2f %.2f %.2f', pcoords.x, pcoords.y, pcoords.z))
 
             -- quando è abbastanza vicino, passiamo alla modalità follow persistente
             local dist = #(pcoords - GetEntityCoords(veh))
