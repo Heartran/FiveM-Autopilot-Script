@@ -119,8 +119,36 @@ local function findVehicle()
     return nil
 end
 
-local function stopAutopilot()
+local function parkVehicle()
     local veh = findVehicle()
+    if not veh then return end
+
+    if not driverPed or not DoesEntityExist(driverPed) then
+        driverPed = spawnDriver(veh)
+    end
+
+    summoning = false
+    following = false
+
+    local coords = GetEntityCoords(veh)
+    local found, x, y, z, heading = GetClosestVehicleNodeWithHeading(coords.x, coords.y, coords.z, 1, 3.0, 0)
+    if found then
+        TaskVehiclePark(driverPed, veh, x, y, z, heading, 0, 20.0, true)
+    else
+        TaskVehicleTempAction(driverPed, veh, 27, 6000)
+    end
+
+    local timeout = GetGameTimer() + 15000
+    while GetGameTimer() < timeout and not IsVehicleStopped(veh) do
+        Wait(500)
+    end
+end
+
+local function stopAutopilot(parkFirst)
+    local veh = findVehicle()
+    if parkFirst then
+        parkVehicle()
+    end
     if driverPed and DoesEntityExist(driverPed) then
         ClearPedTasks(driverPed)
         if veh and DoesEntityExist(veh) then
@@ -216,8 +244,13 @@ end, false)
 RegisterKeyMapping('autopilot', 'Autopilota personale', 'keyboard', KEY_DEFAULT)
 
 RegisterCommand('autopilot_stop', function()
-    stopAutopilot()
-    notify('Autopilota fermato.')
+    stopAutopilot(true)
+    notify('Autopilota fermato e veicolo parcheggiato.')
+end, false)
+
+RegisterCommand('autopilot_park', function()
+    stopAutopilot(true)
+    notify('Veicolo parcheggiato.')
 end, false)
 
 RegisterCommand('autopilot_clear', function()
