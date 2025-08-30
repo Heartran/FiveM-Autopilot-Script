@@ -388,14 +388,22 @@ CreateThread(function()
                 SetBlipSprite(vehicleBlip, 225) -- car
                 SetBlipAsFriendly(vehicleBlip, true)
                 SetBlipScale(vehicleBlip, 0.8)
+                SetBlipHighDetail(vehicleBlip, true)
+                SetBlipDisplay(vehicleBlip, 6)
+                SetBlipPriority(vehicleBlip, 10)
                 BeginTextCommandSetBlipName('STRING')
                 AddTextComponentSubstringPlayerName('Veicolo')
                 EndTextCommandSetBlipName(vehicleBlip)
             end
+            -- Force-sync blip coords and rotation to improve accuracy
+            local vcoords = GetEntityCoords(veh)
+            SetBlipCoords(vehicleBlip, vcoords.x, vcoords.y, vcoords.z)
+            local heading = GetEntityHeading(veh)
+            SetBlipRotation(vehicleBlip, math.floor(heading))
         elseif vehicleBlip and DoesBlipExist(vehicleBlip) then
             RemoveBlip(vehicleBlip)
             vehicleBlip = nil
         end
-        Wait(2000)
+        Wait(300)
     end
 end)
