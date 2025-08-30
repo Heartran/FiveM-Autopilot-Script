@@ -163,18 +163,55 @@ local function parkVehicle()
     summoning = false
     following = false
 
-    local coords = GetEntityCoords(veh)
-    local found, x, y, z, heading = GetClosestVehicleNodeWithHeading(coords.x, coords.y, coords.z, 1, 3.0, 0)
-    if found then
-        TaskVehiclePark(driverPed, veh, x, y, z, heading, 0, 20.0, true)
+    -- Compute a roadside parking spot: slightly ahead and to the right of the lane
+    local function calcParkSpotNear(v)
+        local vpos = GetEntityCoords(v)
+        local found, nx, ny, nz, nheading = GetClosestVehicleNodeWithHeading(vpos.x, vpos.y, vpos.z, 1, 3.0, 0)
+        if not found then
+            return vpos.x, vpos.y, vpos.z, GetEntityHeading(v)
+        end
+        local headRad = math.rad(nheading)
+        local ahead = 8.0
+        local side = 2.2
+        local function spot(offSide)
+            local tx = nx + math.cos(headRad) * ahead + math.cos(headRad + math.pi / 2) * offSide
+            local ty = ny + math.sin(headRad) * ahead + math.sin(headRad + math.pi / 2) * offSide
+            local tz = nz
+            return tx, ty, tz
+        end
+        local tx, ty, tz = spot(side) -- try right side (right-hand traffic)
+        if not IsPointOnRoad(tx, ty, tz, v) then
+            tx, ty, tz = spot(-side)   -- try left side
+        end
+        if not IsPointOnRoad(tx, ty, tz, v) then
+            -- fallback: center of lane ahead
+            tx = nx + math.cos(headRad) * ahead
+            ty = ny + math.sin(headRad) * ahead
+            tz = nz
+        end
+        return tx, ty, tz, nheading
+    end
+
+    local tx, ty, tz, thead = calcParkSpotNear(veh)
+    if tx and ty and tz then
+        -- mode 1 = park forward; radius 3.0; engine off after parking
+        TaskVehiclePark(driverPed, veh, tx, ty, tz, thead, 1, 3.0, false)
     else
         TaskVehicleTempAction(driverPed, veh, 27, 6000)
     end
 
-    local timeout = GetGameTimer() + 15000
-    while GetGameTimer() < timeout and not IsVehicleStopped(veh) do
-        Wait(500)
+    local timeout = GetGameTimer() + 20000
+    while GetGameTimer() < timeout do
+        local vpos = GetEntityCoords(veh)
+        local dist = #(vpos - vector3(tx or vpos.x, ty or vpos.y, tz or vpos.z))
+        if IsVehicleStopped(veh) and dist <= 3.5 then
+            break
+        end
+        Wait(400)
     end
+    -- Ensure parked: brake and engine off
+    TaskVehicleTempAction(driverPed, veh, 27, 1200)
+    SetVehicleEngineOn(veh, false, true, true)
 end
 
 local function stopAutopilot(parkFirst)
