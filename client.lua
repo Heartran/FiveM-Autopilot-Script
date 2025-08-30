@@ -16,6 +16,7 @@ local personal = nil -- { netId, plate }
 local driverPed = nil
 local summoning = false
 local following = false
+local vehicleBlip = nil
 
 -- =========================
 -- UTILS
@@ -223,5 +224,31 @@ RegisterCommand('autopilot_clear', function()
     stopAutopilot()
     personal = nil
     TriggerServerEvent('autopilot:clearPersonal')
+    if vehicleBlip and DoesBlipExist(vehicleBlip) then
+        RemoveBlip(vehicleBlip)
+        vehicleBlip = nil
+    end
     notify('Veicolo personale resettato.')
 end, false)
+
+-- Maintain a blip on the personal vehicle if it exists
+CreateThread(function()
+    while true do
+        local veh = personal and findVehicle()
+        if veh and DoesEntityExist(veh) then
+            if not vehicleBlip or not DoesBlipExist(vehicleBlip) then
+                vehicleBlip = AddBlipForEntity(veh)
+                SetBlipSprite(vehicleBlip, 225) -- car
+                SetBlipAsFriendly(vehicleBlip, true)
+                SetBlipScale(vehicleBlip, 0.8)
+                BeginTextCommandSetBlipName('STRING')
+                AddTextComponentSubstringPlayerName('Veicolo')
+                EndTextCommandSetBlipName(vehicleBlip)
+            end
+        elseif vehicleBlip and DoesBlipExist(vehicleBlip) then
+            RemoveBlip(vehicleBlip)
+            vehicleBlip = nil
+        end
+        Wait(2000)
+    end
+end)
