@@ -6,7 +6,7 @@
 local MENU_KEY = 'F4'
 local DRIVE_SPEED = 28.0 -- m/s (~100km/h)
 local DRIVING_STYLE = 786603 -- road/normal
-local FOLLOW_DISTANCE = 8.0
+local FOLLOW_DISTANCE = 3.0
 
 -- =========================
 -- STATE
@@ -195,13 +195,20 @@ local function summonVehicle()
     CreateThread(function()
         while summoning do
             local pcoords = GetEntityCoords(PlayerPedId())
-            TaskVehicleDriveToCoordLongrange(driverPed, veh, pcoords.x, pcoords.y, pcoords.z, DRIVE_SPEED, DRIVING_STYLE, 20.0)
+            -- Drive towards the closest road node near the player to stay on roads
+            local found, nx, ny, nz, nheading = GetClosestVehicleNodeWithHeading(pcoords.x, pcoords.y, pcoords.z, 1, 3.0, 0)
+            if found then
+                TaskVehicleDriveToCoordLongrange(driverPed, veh, nx, ny, nz, DRIVE_SPEED, DRIVING_STYLE, 20.0)
+            else
+                -- Fallback to player coords if no node found
+                TaskVehicleDriveToCoordLongrange(driverPed, veh, pcoords.x, pcoords.y, pcoords.z, DRIVE_SPEED, DRIVING_STYLE, 20.0)
+            end
             if #(pcoords - GetEntityCoords(veh)) <= FOLLOW_DISTANCE then
                 summoning = false
                 following = true
                 notify('Ti sto seguendo.')
             end
-            Wait(2000)
+            Wait(1000)
         end
         while following do
             local ped = PlayerPedId()
@@ -210,8 +217,18 @@ local function summonVehicle()
                 stopAutopilot()
                 break
             end
-            TaskVehicleFollow(driverPed, veh, ped, DRIVE_SPEED, DRIVING_STYLE, FOLLOW_DISTANCE)
-            Wait(2000)
+            local pcoords = GetEntityCoords(ped)
+            local found, nx, ny, nz, nheading = GetClosestVehicleNodeWithHeading(pcoords.x, pcoords.y, pcoords.z, 1, 3.0, 0)
+            if found then
+                TaskVehicleDriveToCoordLongrange(driverPed, veh, nx, ny, nz, DRIVE_SPEED, DRIVING_STYLE, 20.0)
+            else
+                TaskVehicleDriveToCoordLongrange(driverPed, veh, pcoords.x, pcoords.y, pcoords.z, DRIVE_SPEED, DRIVING_STYLE, 20.0)
+            end
+            -- If close enough, keep speed minimal
+            if #(pcoords - GetEntityCoords(veh)) <= FOLLOW_DISTANCE then
+                TaskVehicleTempAction(driverPed, veh, 27, 1000) -- brake
+            end
+            Wait(600)
         end
     end)
 end
