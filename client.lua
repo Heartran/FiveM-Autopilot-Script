@@ -2,9 +2,8 @@
 -- The script is intentionally simple to maximise reliability.
 
 -- =========================
--- CONFIGURATION
 -- =========================
-local KEY_DEFAULT = 'F6'
+local MENU_KEY = 'F4'
 local DRIVE_SPEED = 28.0 -- m/s (~100km/h)
 local DRIVING_STYLE = 786603 -- road/normal
 local FOLLOW_DISTANCE = 8.0
@@ -241,7 +240,12 @@ RegisterCommand('autopilot', function()
     end
 end, false)
 
-RegisterKeyMapping('autopilot', 'Autopilota personale', 'keyboard', KEY_DEFAULT)
+RegisterCommand('autopilot_menu', function()
+    SetNuiFocus(true, true)
+    SendNUIMessage({ action = 'toggle', show = true })
+end, false)
+
+RegisterKeyMapping('autopilot_menu', 'Menu Autopilota', 'keyboard', MENU_KEY)
 
 RegisterCommand('autopilot_stop', function()
     stopAutopilot(true)
@@ -249,7 +253,8 @@ RegisterCommand('autopilot_stop', function()
 end, false)
 
 RegisterCommand('autopilot_park', function()
-    stopAutopilot(true)
+    parkVehicle()
+    stopAutopilot()
     notify('Veicolo parcheggiato.')
 end, false)
 
@@ -263,6 +268,19 @@ RegisterCommand('autopilot_clear', function()
     end
     notify('Veicolo personale resettato.')
 end, false)
+
+RegisterNUICallback('close', function(_, cb)
+    SetNuiFocus(false, false)
+    SendNUIMessage({ action = 'toggle', show = false })
+    cb('ok')
+end)
+
+RegisterNUICallback('command', function(data, cb)
+    if data and data.cmd then
+        ExecuteCommand(data.cmd)
+    end
+    cb('ok')
+end)
 
 -- Maintain a blip on the personal vehicle if it exists
 CreateThread(function()

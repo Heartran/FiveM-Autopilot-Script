@@ -13,3 +13,11 @@ client_scripts {
 server_scripts {
     'server.lua'
 }
+
+ui_page 'html/menu.html'
+
+files {
+    'html/menu.html',
+    'html/menu.js',
+    'html/menu.css'
+}
