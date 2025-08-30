@@ -1,25 +1,21 @@
-local personal = {} -- [source] = { netId = number, plate = string }
+-- Server side for Autopilot rewrite
+-- Keeps track of each player's registered personal vehicle.
+
+local personal = {}
 
 RegisterNetEvent('autopilot:registerPersonal', function(netId, plate)
-    local src = source
-    personal[src] = { netId = netId, plate = plate }
-    TriggerClientEvent('autopilot:notify', src, ('Veicolo personale registrato (%s).'):format(plate))
+    personal[source] = { netId = netId, plate = plate }
+    TriggerClientEvent('autopilot:notify', source, ('Veicolo personale registrato (%s).'):format(plate))
 end)
 
 RegisterNetEvent('autopilot:clearPersonal', function()
-    local src = source
-    personal[src] = nil
+    personal[source] = nil
 end)
 
-lib = lib or {} -- no-op, in caso di future estensioni
-
 RegisterNetEvent('autopilot:getPersonal', function()
-    local src = source
-    local data = personal[src]
-    TriggerClientEvent('autopilot:cbPersonal', src, data)
+    TriggerClientEvent('autopilot:cbPersonal', source, personal[source])
 end)
 
 AddEventHandler('playerDropped', function()
-    local src = source
-    personal[src] = nil
+    personal[source] = nil
 end)
