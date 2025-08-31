@@ -24,7 +24,7 @@ end)
 local MENU_KEY = 'F4'
 local DRIVE_SPEED = 28.0 -- m/s (~100km/h)
 local DRIVING_STYLE = 786603 -- road/normal
-local FOLLOW_DISTANCE = 0.5
+local FOLLOW_DISTANCE = 5.0
 
 -- =========================
 -- STATE
@@ -299,10 +299,10 @@ local function summonVehicle()
             -- Drive towards the closest road node near the player to stay on roads
             local found, nx, ny, nz, nheading = GetClosestVehicleNodeWithHeading(pcoords.x, pcoords.y, pcoords.z, 1, 3.0, 0)
             if found then
-                TaskVehicleDriveToCoordLongrange(driverPed, veh, nx, ny, nz, DRIVE_SPEED, DRIVING_STYLE, 20.0)
+                TaskVehicleDriveToCoordLongrange(driverPed, veh, nx, ny, nz, DRIVE_SPEED, DRIVING_STYLE, 5.0)
             else
                 -- Fallback to player coords if no node found
-                TaskVehicleDriveToCoordLongrange(driverPed, veh, pcoords.x, pcoords.y, pcoords.z, DRIVE_SPEED, DRIVING_STYLE, 20.0)
+                TaskVehicleDriveToCoordLongrange(driverPed, veh, pcoords.x, pcoords.y, pcoords.z, DRIVE_SPEED, DRIVING_STYLE, 5.0)
             end
             -- Adaptive cruise and obstacle avoidance
             local dist = #(pcoords - GetEntityCoords(veh))
@@ -334,9 +334,9 @@ local function summonVehicle()
             local pcoords = GetEntityCoords(ped)
             local found, nx, ny, nz, nheading = GetClosestVehicleNodeWithHeading(pcoords.x, pcoords.y, pcoords.z, 1, 3.0, 0)
             if found then
-                TaskVehicleDriveToCoordLongrange(driverPed, veh, nx, ny, nz, DRIVE_SPEED, DRIVING_STYLE, 20.0)
+                TaskVehicleDriveToCoordLongrange(driverPed, veh, nx, ny, nz, DRIVE_SPEED, DRIVING_STYLE, 5.0)
             else
-                TaskVehicleDriveToCoordLongrange(driverPed, veh, pcoords.x, pcoords.y, pcoords.z, DRIVE_SPEED, DRIVING_STYLE, 20.0)
+                TaskVehicleDriveToCoordLongrange(driverPed, veh, pcoords.x, pcoords.y, pcoords.z, DRIVE_SPEED, DRIVING_STYLE, 5.0)
             end
             -- If close enough, keep speed minimal
             local dist = #(pcoords - GetEntityCoords(veh))
