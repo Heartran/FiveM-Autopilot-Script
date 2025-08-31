@@ -158,10 +158,142 @@ local function takeControl(entity, retries)
     return NetworkHasControlOfEntity(entity)
 end
 
-local function ensureModel(hash)
-    RequestModel(hash)
-    while not HasModelLoaded(hash) do
-        Wait(0)
+-- Helper: tenta di parcheggiare il veicolo con log, timeout e fallback
+local function AttemptParkVehicle(veh, ped, tx, ty, tz, thead, timeoutSeconds)
+    timeoutSeconds = timeoutSeconds or 30
+    if not veh or not DoesEntityExist(veh) then
+        Debug('Errore: Veicolo non trovato per il parcheggio.')
+        return false
+    end
+    if not ped or not DoesEntityExist(ped) then
+        Debug('Errore: Ped non trovato per il parcheggio.')
+        return false
+    end
+
+    -- Determina coordinate di parcheggio valide
+    local useX, useY, useZ, useH
+    if not tx or not ty or not tz then
+        local c = GetEntityCoords(veh)
+        useX, useY, useZ = table.unpack(c)
+        useH = GetEntityHeading(veh)
+        Debug(('Parcheggio fallback - x: %.2f, y: %.2f, z: %.2f, heading: %.2f'):format(useX, useY, useZ, useH))
+    else
+        useX, useY, useZ, useH = tx, ty, tz, thead or GetEntityHeading(veh)
+        Debug(('Nodo parcheggio - x: %s, y: %s, z: %s, heading: %s'):format(tostring(useX), tostring(useY), tostring(useZ), tostring(useH)))
+    end
+
+    -- Assicura il controllo in rete prima di assegnare i task
+    if not TakeControl(veh, 60) then Debug('Attenzione: controllo rete veicolo non ottenuto per il parcheggio') end
+    if not TakeControl(ped, 60) then Debug('Attenzione: controllo rete ped non ottenuto per il parcheggio') end
+
+    local target = vector3(useX, useY, useZ)
+    local start = GetGameTimer()
+    local parked = false
+
+    -- Prova TaskVehiclePark (modalità 0), riemetti periodicamente fino al timeout
+    while (GetGameTimer() - start) < (timeoutSeconds * 1000) do
+        if not IsVehicleStopped(veh) then
+            TaskVehiclePark(ped, veh, target, useH, 0, 3.0, false)
+            Debug('TaskVehiclePark assegnato (mode=0, radius=3.0)')
+        end
+
+        Wait(700)
+
+        local dist = #(GetEntityCoords(veh) - target)
+        if dist <= 2.0 or IsVehicleStopped(veh) then
+            parked = true
+            Debug(('Veicolo parcheggiato (dist=%.2f)').format and ('Veicolo parcheggiato (dist=%.2f)'):format(dist) or ('Veicolo parcheggiato (dist=' .. tostring(dist) .. ')'))
+            break
+        end
+    end
+
+    -- Se non è riuscito, prova una modalità alternativa di parcheggio o avvicinamento
+    if not parked then
+        Debug('TaskVehiclePark non ha avuto successo entro il timeout; provo fallback tramite guida lenta')
+        -- guida lentamente verso il target per posizionarlo correttamente
+        TaskVehicleDriveToCoordLongrange(ped, veh, useX, useY, useZ, 6.0, DRIVING_STYLE, 5.0)
+        local start2 = GetGameTimer()
+        while (GetGameTimer() - start2) < (10 * 1000) do -- 10s di tentativo
+            Wait(500)
+            local dist2 = #(GetEntityCoords(veh) - target)
+            if dist2 <= 2.0 or IsVehicleStopped(veh) then
+                parked = true
+                Debug(('Fallback: veicolo vicino al target (dist=%.2f)').format and ('Fallback: veicolo vicino al target (dist=%.2f)'):format(dist2) or ('Fallback: dist=' .. tostring(dist2)))
+                break
+            end
+        end
+    end
+
+    -- Se ancora non parcheggiato, ferma il veicolo e fallisci
+    if not parked then
+        Debug('Impossibile parcheggiare automaticamente; fermerò il veicolo.')
+        TaskVehicleTempAction(ped, veh, 1, 1000) -- frena un attimo
+        SetVehicleForwardSpeed(veh, 0.0)
+        Citizen.Wait(500)
+    end
+
+    -- Pulizia minima: ferma i compiti di parcheggio ma lascia il ped per lasciare il veicolo all'esterno
+    ClearPedTasks(ped)
+    return parked
+end
+
+
+-- Richiede al server un nodo di parcheggio vicino alla posizione px,py,pz
+-- Restituisce il nodo tramite callback(node) dopo al massimo timeoutMs
+local function RequestServerParkNode(px, py, pz, callback, timeoutMs)
+    timeoutMs = timeoutMs or 2000
+    -- usa un singolo handler globale per evitare multiple registrazioni
+    if not RequestServerParkNode._handlerRegistered then
+        RequestServerParkNode._pendingCallback = nil
+        RegisterNetEvent('autopilot:cbParkNode', function(node)
+            if RequestServerParkNode._pendingCallback then
+                local cb = RequestServerParkNode._pendingCallback
+                RequestServerParkNode._pendingCallback = nil
+                cb(node)
+            end
+        end)
+        RequestServerParkNode._handlerRegistered = true
+    end
+
+    -- imposta la callback pendente e invia la richiesta al server
+    RequestServerParkNode._pendingCallback = callback
+    TriggerServerEvent('autopilot:requestParkNode', px, py, pz)
+
+    -- timeout guard
+    CreateThread(function()
+        Wait(timeoutMs)
+        if RequestServerParkNode._pendingCallback then
+            local cb = RequestServerParkNode._pendingCallback
+            RequestServerParkNode._pendingCallback = nil
+            cb(nil)
+        end
+    end)
+end
+
+local function StopAndDismissDriver(veh, ped)
+    if ped and DoesEntityExist(ped) then
+        -- richiedi al server un nodo di parcheggio vicino al veicolo
+        local cx, cy, cz = table.unpack(GetEntityCoords(veh))
+        local responded = false
+        RequestServerParkNode(cx, cy, cz, function(node)
+            responded = true
+            local parked = false
+            if node then
+                Debug(('Server ha risposto con nodo parcheggio: %.2f, %.2f, %.2f'):format(node.x, node.y, node.z))
+                parked = AttemptParkVehicle(veh, ped, node.x, node.y, node.z, node.heading, 30)
+            else
+                Debug('Server non ha fornito nodo parcheggio; uso fallback locale')
+                parked = AttemptParkVehicle(veh, ped, nil, nil, nil, nil, 30)
+            end
+            Wait(700)
+            TaskLeaveVehicle(ped, veh, 0)
+            Wait(500)
+            if DoesEntityExist(ped) then
+                DeleteEntity(ped)
+            end
+            Debug('Driver dismissed after StopAndDismissDriver (parked=' .. tostring(parked) .. ')')
+        end, 2000)
+        -- non blocchiamo il thread qui: il callback si occuperà del resto
     end
 end
 
