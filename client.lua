@@ -22,9 +22,9 @@ end)
 -- =========================
 -- =========================
 local MENU_KEY = 'F4'
-local DRIVE_SPEED = 28.0 -- m/s (~100km/h)
+local DEFAULT_DRIVE_SPEED = 28.0 -- m/s (~100km/h) fallback
 local DRIVING_STYLE = 786603 -- road/normal
-local FOLLOW_DISTANCE = 0.5
+local FOLLOW_DISTANCE = 5.0
 
 -- =========================
 -- STATE
@@ -48,12 +48,44 @@ end
 -- =========================
 -- DRIVING HELPERS (ADAPTIVE + AVOIDANCE)
 -- =========================
-local function adaptiveSpeed(dist)
+local function calcDriveSpeed(veh)
+    -- Determine speed based on road type, weather and vehicle condition
+    local speed = DEFAULT_DRIVE_SPEED
+    if veh and DoesEntityExist(veh) then
+        local coords = GetEntityCoords(veh)
+        local streetHash = GetStreetNameAtCoord(coords.x, coords.y, coords.z)
+        local street = GetStreetNameFromHashKey(streetHash)
+        if street then
+            street = street:upper()
+            if street:find('FWY') or street:find('HWY') or street:find('FREEWAY') then
+                speed = 33.0 -- ~120km/h on highways
+            elseif street:find('BLVD') or street:find('AVE') or street:find('RD') then
+                speed = 22.0 -- ~80km/h on larger roads
+            else
+                speed = 14.0 -- ~50km/h on smaller streets
+            end
+        else
+            speed = DEFAULT_DRIVE_SPEED
+        end
+        local weather = GetPrevWeatherTypeHashName()
+        if weather == GetHashKey('RAIN') or weather == GetHashKey('THUNDER') or weather == GetHashKey('BLIZZARD') then
+            speed = speed * 0.8 -- slow down in bad weather
+        end
+        local health = GetVehicleBodyHealth(veh)
+        if health < 800.0 then
+            speed = speed * 0.7 -- cautious if damaged
+        end
+    end
+    return speed
+end
+
+local function adaptiveSpeed(veh, dist)
     -- Return a cautious speed based on distance to target (meters)
-    if dist > 40.0 then return DRIVE_SPEED end
-    if dist > 25.0 then return 20.0 end
-    if dist > 12.0 then return 14.0 end
-    if dist > 6.0 then return 8.0 end
+    local base = calcDriveSpeed(veh)
+    if dist > 40.0 then return base end
+    if dist > 25.0 then return math.min(base, 20.0) end
+    if dist > 12.0 then return math.min(base, 14.0) end
+    if dist > 6.0 then return math.min(base, 8.0) end
     return 1.0
 end
 
@@ -299,14 +331,14 @@ local function summonVehicle()
             -- Drive towards the closest road node near the player to stay on roads
             local found, nx, ny, nz, nheading = GetClosestVehicleNodeWithHeading(pcoords.x, pcoords.y, pcoords.z, 1, 3.0, 0)
             if found then
-                TaskVehicleDriveToCoordLongrange(driverPed, veh, nx, ny, nz, DRIVE_SPEED, DRIVING_STYLE, 20.0)
+                TaskVehicleDriveToCoordLongrange(driverPed, veh, nx, ny, nz, calcDriveSpeed(veh), DRIVING_STYLE, 5.0)
             else
                 -- Fallback to player coords if no node found
-                TaskVehicleDriveToCoordLongrange(driverPed, veh, pcoords.x, pcoords.y, pcoords.z, DRIVE_SPEED, DRIVING_STYLE, 20.0)
+                TaskVehicleDriveToCoordLongrange(driverPed, veh, pcoords.x, pcoords.y, pcoords.z, calcDriveSpeed(veh), DRIVING_STYLE, 5.0)
             end
             -- Adaptive cruise and obstacle avoidance
             local dist = #(pcoords - GetEntityCoords(veh))
-            local spd = adaptiveSpeed(dist)
+            local spd = adaptiveSpeed(veh, dist)
             SetDriveTaskCruiseSpeed(driverPed, spd)
             if vehicleAhead(veh) or obstacleAhead(veh) then
                 -- Strong early brake if obstacle detected ahead
@@ -334,9 +366,9 @@ local function summonVehicle()
             local pcoords = GetEntityCoords(ped)
             local found, nx, ny, nz, nheading = GetClosestVehicleNodeWithHeading(pcoords.x, pcoords.y, pcoords.z, 1, 3.0, 0)
             if found then
-                TaskVehicleDriveToCoordLongrange(driverPed, veh, nx, ny, nz, DRIVE_SPEED, DRIVING_STYLE, 20.0)
+                TaskVehicleDriveToCoordLongrange(driverPed, veh, nx, ny, nz, calcDriveSpeed(veh), DRIVING_STYLE, 5.0)
             else
-                TaskVehicleDriveToCoordLongrange(driverPed, veh, pcoords.x, pcoords.y, pcoords.z, DRIVE_SPEED, DRIVING_STYLE, 20.0)
+                TaskVehicleDriveToCoordLongrange(driverPed, veh, pcoords.x, pcoords.y, pcoords.z, calcDriveSpeed(veh), DRIVING_STYLE, 5.0)
             end
             -- If close enough, keep speed minimal
             local dist = #(pcoords - GetEntityCoords(veh))
@@ -344,7 +376,7 @@ local function summonVehicle()
                 TaskVehicleTempAction(driverPed, veh, 27, 1200) -- brake
             end
             -- Adaptive cruise and obstacle avoidance
-            local spd = adaptiveSpeed(dist)
+            local spd = adaptiveSpeed(veh, dist)
             -- Cap speed during following for safety
             local spdCap = math.min(spd, 12.0)
             SetDriveTaskCruiseSpeed(driverPed, spdCap)
