@@ -1,143 +1,48 @@
--- Predict vehicle position based on last known state and elapsed time (dead-reckoning)
-local function predictFromState(state, now)
-    if not state then return nil end
-    local dt = math.max(0.0, (now - (state.lastSeen or now)) / 1000.0)
-    local px = (state.x or 0.0) + (state.vx or 0.0) * dt
-    local py = (state.y or 0.0) + (state.vy or 0.0) * dt
-    local pz = (state.z or 0.0) + (state.vz or 0.0) * dt
-    return { x = px, y = py, z = pz, heading = state.heading or 0.0 }
-end
-
--- Receive last known vehicle state from server
-RegisterNetEvent('autopilot:cbVehState', function(state)
-    if state then
-        state.receivedAt = GetGameTimer()
-    end
-    lastState = state
-end)
-
--- Autopilot rewrite: register personal vehicle and summon it to follow the player.
--- The script is intentionally simple to maximise reliability.
-
 -- =========================
+-- CONFIG
 -- =========================
-local MENU_KEY = 'F4'
-local DEFAULT_DRIVE_SPEED = 28.0 -- m/s (~100km/h) fallback
-local DRIVING_STYLE = 786603 -- road/normal
-local FOLLOW_DISTANCE = 5.0
-
--- =========================
--- STATE
--- =========================
-local personal = nil -- { netId, plate }
-local driverPed = nil
-local summoning = false
-local following = false
-local vehicleBlip = nil
-local lastState = nil -- { x,y,z, heading, vx,vy,vz, lastSeen, receivedAt }
+local KEY_DEFAULT = 'F6'
+local SUMMON_RANGE_START_FOLLOW = 15.0   -- quando è a questa distanza, passa al follow persistente
+local FOLLOW_MIN_DISTANCE = 8.0          -- distanza “di cortesia” dietro di te
+local DRIVE_SPEED = 28.0                 -- m/s (~100 km/h)
+local DRIVING_STYLE = 786603             -- stile di guida sicuro/stradale
+local MAKE_DRIVER_INVISIBLE = false -- DEBUG: disabilita invisibilità temporaneamente
+local MAKE_DRIVER_INVINCIBLE = true
+local HONK_ON_FINISH = false             -- non serve più il clacson, lasciamolo spento
+local RETASK_INTERVAL_MS = 2000          -- ogni quanto riaffido il compito di follow
 
 -- =========================
 -- UTILS
 -- =========================
-local function notify(msg)
+local function Notify(msg)
+    -- Puoi sostituire con la tua notifica fancy (mythic, okok, ecc.)
     BeginTextCommandThefeedPost('STRING')
     AddTextComponentSubstringPlayerName(msg)
     EndTextCommandThefeedPostTicker(false, false)
 end
 
--- =========================
--- DRIVING HELPERS (ADAPTIVE + AVOIDANCE)
--- =========================
-local function calcDriveSpeed(veh)
-    -- Determine speed based on road type, weather and vehicle condition
-    local speed = DEFAULT_DRIVE_SPEED
-    if veh and DoesEntityExist(veh) then
-        local coords = GetEntityCoords(veh)
-        local streetHash = GetStreetNameAtCoord(coords.x, coords.y, coords.z)
-        local street = GetStreetNameFromHashKey(streetHash)
-        if street then
-            street = street:upper()
-            if street:find('FWY') or street:find('HWY') or street:find('FREEWAY') then
-                speed = 33.0 -- ~120km/h on highways
-            elseif street:find('BLVD') or street:find('AVE') or street:find('RD') then
-                speed = 22.0 -- ~80km/h on larger roads
-            else
-                speed = 14.0 -- ~50km/h on smaller streets
-            end
-        else
-            speed = DEFAULT_DRIVE_SPEED
-        end
-        local weather = GetPrevWeatherTypeHashName()
-        if weather == GetHashKey('RAIN') or weather == GetHashKey('THUNDER') or weather == GetHashKey('BLIZZARD') then
-            speed = speed * 0.8 -- slow down in bad weather
-        end
-        local health = GetVehicleBodyHealth(veh)
-        if health < 800.0 then
-            speed = speed * 0.7 -- cautious if damaged
-        end
-    end
-    return speed
-end
-
-local function adaptiveSpeed(veh, dist)
-    -- Return a cautious speed based on distance to target (meters)
-    local base = calcDriveSpeed(veh)
-    if dist > 40.0 then return base end
-    if dist > 25.0 then return math.min(base, 20.0) end
-    if dist > 12.0 then return math.min(base, 14.0) end
-    if dist > 6.0 then return math.min(base, 8.0) end
-    return 1.0
-end
-
-local function vehicleAhead(veh)
-    if not (veh and DoesEntityExist(veh)) then return false end
-    local from = GetOffsetFromEntityInWorldCoords(veh, 0.0, 1.5, 0.5)
-    local to = GetOffsetFromEntityInWorldCoords(veh, 0.0, 18.0, 0.5)
-    local ray = StartShapeTestCapsule(from.x, from.y, from.z, to.x, to.y, to.z, 2.0, 10, veh, 7)
-    local _, hit, _, _, entityHit = GetShapeTestResult(ray)
-    return (hit == 1) and DoesEntityExist(entityHit) and IsEntityAVehicle(entityHit) and entityHit ~= veh
-end
-
-local function obstacleAhead(veh)
-    if not (veh and DoesEntityExist(veh)) then return false end
-    local from = GetOffsetFromEntityInWorldCoords(veh, 0.0, 1.5, 0.5)
-    local to = GetOffsetFromEntityInWorldCoords(veh, 0.0, 14.0, 0.5)
-    local ray = StartShapeTestCapsule(from.x, from.y, from.z, to.x, to.y, to.z, 2.0, 12, veh, 7)
-    local _, hit, _, _, entityHit = GetShapeTestResult(ray)
-    if hit ~= 1 or not DoesEntityExist(entityHit) then return false end
-    return IsEntityAVehicle(entityHit) or IsPedAPlayer(entityHit) or IsEntityAPed(entityHit)
-end
-
 RegisterNetEvent('autopilot:notify', function(msg)
-    notify(msg)
+    Notify(msg)
 end)
 
--- Add chat suggestions for commands (requires default chat resource)
-CreateThread(function()
-    -- Delay to allow chat resource to initialize
-    Wait(1000)
-    TriggerEvent('chat:addSuggestion', '/autopilot', 'Richiama il veicolo personale o registra quello attuale')
-    TriggerEvent('chat:addSuggestion', '/autopilot_menu', 'Apri il menu autopilota')
-    TriggerEvent('chat:addSuggestion', '/autopilot_stop', 'Ferma l\'autopilota e parcheggia')
-    TriggerEvent('chat:addSuggestion', '/autopilot_park', 'Parcheggia il veicolo a bordo strada')
-    TriggerEvent('chat:addSuggestion', '/autopilot_clear', 'Resetta il veicolo personale')
-end)
-
-local function EnumerateEntities(init, move, finish)
+-- Enumeratore veicoli (nel caso serva fallback per plate nearby)
+local function EnumerateEntities(initFunc, moveFunc, disposeFunc)
     return coroutine.wrap(function()
-        local iter, id = init()
-        if id == 0 then
-            finish(iter)
+        local iter, id = initFunc()
+        if not id or id == 0 then
+            disposeFunc(iter)
             return
         end
-        local enum = {handle = iter, destructor = finish}
-        setmetatable(enum, {__gc = function(e)
-            if e.handle then e.destructor(e.handle) end
+        local enum = {handle = iter, destructor = disposeFunc}
+        setmetatable(enum, {__gc = function(enum)
+            if enum.handle then
+                enum.destructor(enum.handle)
+            end
         end})
         local next = true
         repeat
             coroutine.yield(id)
-            next, id = move(iter)
+            next, id = moveFunc(iter)
         until not next
         enum.destructor(iter)
     end)
@@ -147,10 +52,140 @@ local function EnumerateVehicles()
     return EnumerateEntities(FindFirstVehicle, FindNextVehicle, EndFindVehicle)
 end
 
-local function takeControl(entity, retries)
-    retries = retries or 30
+local function GetPlateTrimmed(veh)
+    return (string.gsub(string.upper(GetVehicleNumberPlateText(veh) or ''), '%s+', ''))
+end
+
+-- =========================
+-- STATE
+-- =========================
+local Personal = nil             -- { netId, plate }
+local ActiveSummon = false
+local ActiveFollow = false   -- nuovo: modalità “seguimi”
+local DriverPed = nil
+local DebugEnabled = false
+
+local function Debug(msg)
+    if DebugEnabled then
+        Notify(('[DEBUG] %s'):format(msg))
+    end
+end
+
+-- IPC server → client callback
+RegisterNetEvent('autopilot:cbPersonal', function(data)
+    Personal = data
+end)
+
+local function RequestPersonalFromServer(cb)
+    RegisterNetEvent('__autopilot:cbtmp', cb)
+end
+
+-- Richiama stato dal server
+local function PullPersonalSync()
+    TriggerServerEvent('autopilot:getPersonal')
+end
+
+-- =========================
+-- DRIVER IA
+-- =========================
+local function EnsureModelLoaded(hash)
+    RequestModel(hash)
     local tries = 0
-    while not NetworkHasControlOfEntity(entity) and tries < retries do
+    while not HasModelLoaded(hash) and tries < 200 do
+        Wait(10)
+        tries = tries + 1
+    end
+    return HasModelLoaded(hash)
+end
+
+local function SpawnDriverInVehicle(veh)
+    local model = joaat('s_m_m_scientist_01')
+    RequestModel(model)
+    local t = 0; while not HasModelLoaded(model) and t < 200 do Wait(10) t = t + 1 end
+    if not HasModelLoaded(model) then Notify('Modello driver non caricato'); return nil end
+
+    -- kick eventuale driver esistente
+    local old = GetPedInVehicleSeat(veh, -1)
+    if old ~= 0 then
+        TaskLeaveVehicle(old, veh, 16); Wait(600)
+    end
+
+    -- crea il ped FUORI e poi warpa (è più stabile in rete)
+    local vx, vy, vz = table.unpack(GetEntityCoords(veh))
+    local ped = CreatePed(26, model, vx + 0.5, vy + 0.5, vz, GetEntityHeading(veh), true, true)
+
+    -- network control su ped e veicolo
+    local vehNet = NetworkGetNetworkIdFromEntity(veh)
+    SetNetworkIdCanMigrate(vehNet, true)
+    local tries = 0
+    while not NetworkHasControlOfEntity(veh) and tries < 60 do
+        NetworkRequestControlOfEntity(veh); Wait(0); tries = tries + 1
+    end
+    if not NetworkHasControlOfEntity(veh) then Debug('No network control on VEH after spawn attempts') end
+
+    local pedNet = NetworkGetNetworkIdFromEntity(ped)
+    SetNetworkIdCanMigrate(pedNet, true)
+    tries = 0
+    while not NetworkHasControlOfEntity(ped) and tries < 60 do
+        NetworkRequestControlOfEntity(ped); Wait(0); tries = tries + 1
+    end
+    if not NetworkHasControlOfEntity(ped) then Debug('No network control on PED after spawn attempts') end
+
+    -- preparazione veicolo
+    FreezeEntityPosition(veh, false)
+    SetVehicleUndriveable(veh, false)
+    SetVehicleEngineOn(veh, true, true, false)
+    SetVehicleHandbrake(veh, false)
+    SetVehicleBrake(veh, false)
+    SetVehicleDoorsLocked(veh, 1)
+    SetVehicleTyresCanBurst(veh, true)
+    SetEntityAsMissionEntity(veh, true, false)
+
+    -- assicurati che sia dritto e “sul mondo”
+    if not IsVehicleOnAllWheels(veh) then SetVehicleOnGroundProperly(veh); Debug('Vehicle was not on all wheels; corrected') end
+    RequestCollisionAtCoord(vx, vy, vz)
+    local c = 0; while not HasCollisionLoadedAroundEntity(veh) and c < 100 do Wait(10) c = c + 1 end
+    if not HasCollisionLoadedAroundEntity(veh) then Debug('Collision not fully loaded around vehicle after spawn wait') end
+
+    -- ped sane defaults
+    SetEntityAsMissionEntity(ped, true, true)
+    SetPedIntoVehicle(ped, veh, -1)
+    Debug('Ped inserito nel veicolo (driver seat)')
+    SetBlockingOfNonTemporaryEvents(ped, true)
+    SetPedCanBeDraggedOut(ped, false)
+    SetPedStayInVehicleWhenJacked(ped, true)
+    SetPedNeverLeavesVehicle(ped, true)
+    SetPedDropsWeaponsWhenDead(ped, false)
+    SetPedFleeAttributes(ped, 0, false)
+    SetPedCombatAttributes(ped, 46, true)
+    SetDriverAbility(ped, 1.0)
+    SetDriverAggressiveness(ped, 0.6)
+    SetPedKeepTask(ped, true)
+
+    -- invisibile/immortale (se vuoi)
+    if MAKE_DRIVER_INVISIBLE then
+        SetEntityVisible(ped, false, false)
+        SetEntityAlpha(ped, 0, false)
+        if NetworkSetEntityInvisibleToNetwork then
+            NetworkSetEntityInvisibleToNetwork(ped, true)
+        end
+    end
+    if MAKE_DRIVER_INVINCIBLE then
+        SetEntityInvincible(ped, true)
+        SetEntityProofs(ped, true, true, true, true, true, true, true, true)
+    end
+
+    -- piccolo “nudge” per sbloccare alcune fisiche addormentate
+    SetVehicleForwardSpeed(veh, 1.0)
+
+    SetModelAsNoLongerNeeded(model)
+    return ped
+end
+
+local function TakeControl(entity, maxTries)
+    maxTries = maxTries or 30
+    local tries = 0
+    while not NetworkHasControlOfEntity(entity) and tries < maxTries do
         NetworkRequestControlOfEntity(entity)
         Wait(0)
         tries = tries + 1
@@ -158,563 +193,365 @@ local function takeControl(entity, retries)
     return NetworkHasControlOfEntity(entity)
 end
 
--- Helper: tenta di parcheggiare il veicolo con log, timeout e fallback
-local function AttemptParkVehicle(veh, ped, tx, ty, tz, thead, timeoutSeconds)
-    timeoutSeconds = timeoutSeconds or 30
+local function StopAndDismissDriver(veh, ped)
+    -- Validazione base
     if not veh or not DoesEntityExist(veh) then
-        Debug('Errore: Veicolo non trovato per il parcheggio.')
-        return false
+        print('Errore: Veicolo non trovato (StopAndDismissDriver).')
+        return
     end
     if not ped or not DoesEntityExist(ped) then
-        Debug('Errore: Ped non trovato per il parcheggio.')
-        return false
+        print('Errore: Ped non trovato (StopAndDismissDriver).')
+        return
     end
 
-    -- Determina coordinate di parcheggio valide
-    local useX, useY, useZ, useH
-    if not tx or not ty or not tz then
-        local c = GetEntityCoords(veh)
-        useX, useY, useZ = table.unpack(c)
-        useH = GetEntityHeading(veh)
-        Debug(('Parcheggio fallback - x: %.2f, y: %.2f, z: %.2f, heading: %.2f'):format(useX, useY, useZ, useH))
-    else
-        useX, useY, useZ, useH = tx, ty, tz, thead or GetEntityHeading(veh)
-        Debug(('Nodo parcheggio - x: %s, y: %s, z: %s, heading: %s'):format(tostring(useX), tostring(useY), tostring(useZ), tostring(useH)))
-    end
-
-    -- Assicura il controllo in rete prima di assegnare i task
-    if not TakeControl(veh, 60) then Debug('Attenzione: controllo rete veicolo non ottenuto per il parcheggio') end
-    if not TakeControl(ped, 60) then Debug('Attenzione: controllo rete ped non ottenuto per il parcheggio') end
-
-    local target = vector3(useX, useY, useZ)
-    local start = GetGameTimer()
-    local parked = false
-
-    -- Prova TaskVehiclePark (modalità 0), riemetti periodicamente fino al timeout
-    while (GetGameTimer() - start) < (timeoutSeconds * 1000) do
-        if not IsVehicleStopped(veh) then
-            TaskVehiclePark(ped, veh, target, useH, 0, 3.0, false)
-            Debug('TaskVehiclePark assegnato (mode=0, radius=3.0)')
-        end
-
-        Wait(700)
-
-        local dist = #(GetEntityCoords(veh) - target)
-        if dist <= 2.0 or IsVehicleStopped(veh) then
-            parked = true
-            Debug(('Veicolo parcheggiato (dist=%.2f)').format and ('Veicolo parcheggiato (dist=%.2f)'):format(dist) or ('Veicolo parcheggiato (dist=' .. tostring(dist) .. ')'))
-            break
-        end
-    end
-
-    -- Se non è riuscito, prova una modalità alternativa di parcheggio o avvicinamento
-    if not parked then
-        Debug('TaskVehiclePark non ha avuto successo entro il timeout; provo fallback tramite guida lenta')
-        -- guida lentamente verso il target per posizionarlo correttamente
-        TaskVehicleDriveToCoordLongrange(ped, veh, useX, useY, useZ, 6.0, DRIVING_STYLE, 5.0)
-        local start2 = GetGameTimer()
-        while (GetGameTimer() - start2) < (10 * 1000) do -- 10s di tentativo
-            Wait(500)
-            local dist2 = #(GetEntityCoords(veh) - target)
-            if dist2 <= 2.0 or IsVehicleStopped(veh) then
-                parked = true
-                Debug(('Fallback: veicolo vicino al target (dist=%.2f)').format and ('Fallback: veicolo vicino al target (dist=%.2f)'):format(dist2) or ('Fallback: dist=' .. tostring(dist2)))
-                break
+    -- Funzione helper: richiedi spot di parcheggio (ibrido client->server)
+    local function RequestParkSpot(entity, cb)
+        -- Prova locale: se esiste una funzione calcParkSpotNear la usiamo (assunzione ragionevole)
+        local ok, tx, ty, tz, thead = pcall(function()
+            if type(calcParkSpotNear) == 'function' then
+                return calcParkSpotNear(entity)
             end
+            return nil
+        end)
+
+        if ok and tx and ty and tz and thead then
+            cb({x = tx, y = ty, z = tz, heading = thead, source = 'client-local'})
+            return
         end
-    end
 
-    -- Se ancora non parcheggiato, ferma il veicolo e fallisci
-    if not parked then
-        Debug('Impossibile parcheggiare automaticamente; fermerò il veicolo.')
-        TaskVehicleTempAction(ped, veh, 1, 1000) -- frena un attimo
-        SetVehicleForwardSpeed(veh, 0.0)
-        Citizen.Wait(500)
-    end
+        -- Fallback semplice client-side: manda richiesta al server
+        local vx, vy, vz = table.unpack(GetEntityCoords(entity))
+        local vheading = GetEntityHeading(entity)
+        local responded = false
 
-    -- Pulizia minima: ferma i compiti di parcheggio ma lascia il ped per lasciare il veicolo all'esterno
-    ClearPedTasks(ped)
-    return parked
-end
+        -- one-time risposta dal server
+        local function onResp(data)
+            if responded then return end
+            responded = true
+            cb(data)
+        end
+        RegisterNetEvent('__autopilot:parkSpotResp', onResp)
+        TriggerServerEvent('autopilot:requestParkSpot', NetworkGetNetworkIdFromEntity(entity), vx, vy, vz, vheading)
 
-
--- Richiede al server un nodo di parcheggio vicino alla posizione px,py,pz
--- Restituisce il nodo tramite callback(node) dopo al massimo timeoutMs
-local function RequestServerParkNode(px, py, pz, callback, timeoutMs)
-    timeoutMs = timeoutMs or 2000
-    -- usa un singolo handler globale per evitare multiple registrazioni
-    if not RequestServerParkNode._handlerRegistered then
-        RequestServerParkNode._pendingCallback = nil
-        RegisterNetEvent('autopilot:cbParkNode', function(node)
-            if RequestServerParkNode._pendingCallback then
-                local cb = RequestServerParkNode._pendingCallback
-                RequestServerParkNode._pendingCallback = nil
-                cb(node)
+        -- timeout server
+        CreateThread(function()
+            local to = 3000
+            local waited = 0
+            while waited < to do
+                if responded then return end
+                Wait(100)
+                waited = waited + 100
+            end
+            if not responded then
+                responded = true
+                -- fallback finale: usa posizione corrente del veicolo
+                cb({x = vx, y = vy, z = vz, heading = vheading, source = 'client-fallback'})
             end
         end)
-        RequestServerParkNode._handlerRegistered = true
     end
 
-    -- imposta la callback pendente e invia la richiesta al server
-    RequestServerParkNode._pendingCallback = callback
-    TriggerServerEvent('autopilot:requestParkNode', px, py, pz)
-
-    -- timeout guard
-    CreateThread(function()
-        Wait(timeoutMs)
-        if RequestServerParkNode._pendingCallback then
-            local cb = RequestServerParkNode._pendingCallback
-            RequestServerParkNode._pendingCallback = nil
-            cb(nil)
+    -- Callback che esegue la sequenza di parcheggio una volta ottenuto lo spot
+    RequestParkSpot(veh, function(spot)
+        if not spot or not spot.x then
+            print('Nessuno spot valido ricevuto; abort parcheggio.')
+            return
         end
+
+        local tx, ty, tz = spot.x, spot.y, spot.z
+        local thead = spot.heading or GetEntityHeading(veh)
+        print(("Nodo parcheggio (%s) - x: %s, y: %s, z: %s, heading: %s"):format(tostring(spot.source), tx, ty, tz, thead))
+
+        -- Piccolo freno iniziale
+        ClearPedTasks(ped)
+        TaskVehicleTempAction(ped, veh, 1, 1000)
+
+        -- Prima tentata di parcheggio
+        local PARK_MODE = 1
+        local PARK_RADIUS = 3.0
+        TaskVehiclePark(ped, veh, tx, ty, tz, thead, PARK_MODE, PARK_RADIUS, false)
+
+        -- Aspetta con timeout esteso e ri-applica il parcheggio se necessario
+        local timeout = 60000 -- 60s
+        local waited = 0
+        local interval = 500
+        while waited < timeout do
+            if IsVehicleStopped(veh) then
+                Debug('Veicolo fermo: parcheggio completato o veicolo bloccato')
+                break
+            end
+
+            -- Assicurati che il ped sia nel sedile di guida
+            if not IsPedInVehicle(ped, veh, false) then
+                SetPedIntoVehicle(ped, veh, -1)
+                SetPedNeverLeavesVehicle(ped, true)
+                Debug('Driver was outside vehicle during parking; warped back to driver seat')
+            end
+
+            -- Ri-applica il TaskVehiclePark per "svegliare" il ped
+            TaskVehiclePark(ped, veh, tx, ty, tz, thead, PARK_MODE, PARK_RADIUS, false)
+            Wait(interval)
+            waited = waited + interval
+        end
+
+        -- Fallback se TaskVehiclePark non ha portato il veicolo a fermarsi
+        if not IsVehicleStopped(veh) then
+            print('TaskVehiclePark fallback: non riuscito entro timeout, provo a guidare lentamente verso il target e riprovare')
+            -- guida lentamente verso il target
+            local SLOW_SPEED = 5.0
+            TaskVehicleDriveToCoordLongrange(ped, veh, tx, ty, tz, SLOW_SPEED, DRIVING_STYLE, 3.0)
+
+            local driveTimeout = 30000
+            local dwait = 0
+            while dwait < driveTimeout do
+                local dist = #(GetEntityCoords(veh) - vector3(tx, ty, tz))
+                if dist <= PARK_RADIUS or IsVehicleStopped(veh) then
+                    break
+                end
+                Wait(500)
+                dwait = dwait + 500
+            end
+
+            -- Prova di nuovo a parcheggiare
+            ClearPedTasks(ped)
+            TaskVehiclePark(ped, veh, tx, ty, tz, thead, PARK_MODE, PARK_RADIUS, false)
+            Wait(1000)
+        end
+
+        -- Leave & cleanup
+        TaskLeaveVehicle(ped, veh, 0)
+        Wait(500)
+        DeleteEntity(ped)
     end)
 end
 
-local function StopAndDismissDriver(veh, ped)
-    if ped and DoesEntityExist(ped) then
-        -- richiedi al server un nodo di parcheggio vicino al veicolo
-        local cx, cy, cz = table.unpack(GetEntityCoords(veh))
-        local responded = false
-        RequestServerParkNode(cx, cy, cz, function(node)
-            responded = true
-            local parked = false
-            if node then
-                Debug(('Server ha risposto con nodo parcheggio: %.2f, %.2f, %.2f'):format(node.x, node.y, node.z))
-                parked = AttemptParkVehicle(veh, ped, node.x, node.y, node.z, node.heading, 30)
-            else
-                Debug('Server non ha fornito nodo parcheggio; uso fallback locale')
-                parked = AttemptParkVehicle(veh, ped, nil, nil, nil, nil, 30)
-            end
-            Wait(700)
-            TaskLeaveVehicle(ped, veh, 0)
-            Wait(500)
-            if DoesEntityExist(ped) then
-                DeleteEntity(ped)
-            end
-            Debug('Driver dismissed after StopAndDismissDriver (parked=' .. tostring(parked) .. ')')
-        end, 2000)
-        -- non blocchiamo il thread qui: il callback si occuperà del resto
-    end
-end
-
-local function spawnDriver(veh)
-        local model = joaat('s_m_m_scientist_01')
-    ensureModel(model)
-    local ped = CreatePed(26, model, 0.0, 0.0, 0.0, 0.0, true, true)
-    SetEntityAsMissionEntity(ped, true, true)
-    SetPedIntoVehicle(ped, veh, -1)
-    SetBlockingOfNonTemporaryEvents(ped, true)
-    SetPedKeepTask(ped, true)
-    SetEntityInvincible(ped, true)
-    SetEntityVisible(ped, false, false)
-    -- Safer driving profile
-    SetDriverAbility(ped, 0.6)
-    SetDriverAggressiveness(ped, 0.0)
-    return ped
-end
-
 -- =========================
--- SYNC WITH SERVER
+-- SUMMON LOGIC
 -- =========================
-RegisterNetEvent('autopilot:cbPersonal', function(data)
-    personal = data
-end)
-
-local function pullPersonal()
-    TriggerServerEvent('autopilot:getPersonal')
-end
-
--- =========================
--- VEHICLE HELPERS
--- =========================
-local function getPlateTrimmed(veh)
-    return (GetVehicleNumberPlateText(veh) or ''):gsub('%s+', ''):upper()
-end
-
-local function findVehicle()
-    if not personal then return nil end
-    local veh = NetworkGetEntityFromNetworkId(personal.netId or -1)
+local function FindVehicleFromPersonal()
+    if not Personal then return nil end
+    local veh = NetworkGetEntityFromNetworkId(Personal.netId or -1)
     if veh ~= 0 and DoesEntityExist(veh) then
         return veh
     end
-    local plate = (personal.plate or ''):gsub('%s+', ''):upper()
-    for vehIt in EnumerateVehicles() do
-        if getPlateTrimmed(vehIt) == plate then
-            return vehIt
+
+    -- Fallback: prova a trovare per plate nei veicoli streamati localmente
+    local targetPlate = (Personal.plate or ''):gsub('%s+', ''):upper()
+    if targetPlate ~= '' then
+        for vehIt in EnumerateVehicles() do
+            if GetPlateTrimmed(vehIt) == targetPlate then
+                return vehIt
+            end
         end
     end
     return nil
 end
 
-local function parkVehicle()
-    local veh = findVehicle()
-    if not veh then return end
-
-    if not driverPed or not DoesEntityExist(driverPed) then
-        driverPed = spawnDriver(veh)
+local function SummonVehicleToPlayer()
+    if ActiveSummon or ActiveFollow then
+        Notify('L’autopilota è già attivo.')
+        return
     end
 
-    summoning = false
-    following = false
+    PullPersonalSync()
+    Wait(150)
 
-    -- Compute a roadside parking spot: slightly ahead and to the right of the lane
-    local function calcParkSpotNear(v)
-        local vpos = GetEntityCoords(v)
-        local found, nx, ny, nz, nheading = GetClosestVehicleNodeWithHeading(vpos.x, vpos.y, vpos.z, 1, 3.0, 0)
-        if not found then
-            return vpos.x, vpos.y, vpos.z, GetEntityHeading(v)
-        end
-        local headRad = math.rad(nheading)
-        local ahead = 8.0
-        local side = 2.2
-        local function spot(offSide)
-            local tx = nx + math.cos(headRad) * ahead + math.cos(headRad + math.pi / 2) * offSide
-            local ty = ny + math.sin(headRad) * ahead + math.sin(headRad + math.pi / 2) * offSide
-            local tz = nz
-            return tx, ty, tz
-        end
-        local tx, ty, tz = spot(side) -- try right side (right-hand traffic)
-        if not IsPointOnRoad(tx, ty, tz, v) then
-            tx, ty, tz = spot(-side)   -- try left side
-        end
-        if not IsPointOnRoad(tx, ty, tz, v) then
-            -- fallback: center of lane ahead
-            tx = nx + math.cos(headRad) * ahead
-            ty = ny + math.sin(headRad) * ahead
-            tz = nz
-        end
-        return tx, ty, tz, nheading
+    if not Personal then
+        Notify('Nessun veicolo personale registrato. Siediti in un’auto e premi il tasto per registrarla.')
+        return
     end
 
-    local tx, ty, tz, thead = calcParkSpotNear(veh)
-    if tx and ty and tz then
-        -- mode 1 = park forward; radius 3.0; engine off after parking
-        TaskVehiclePark(driverPed, veh, tx, ty, tz, thead, 1, 3.0, false)
+    local veh = FindVehicleFromPersonal()
+    if not veh or veh == 0 or not DoesEntityExist(veh) then
+        Notify('Non trovo il tuo veicolo (deve essere spawnato/OneSync attivo).')
+        return
+    end
+    if not TakeControl(veh) then
+        Notify('Non ho il controllo del veicolo. Riprova tra poco.')
+        return
+    end
+
+    SetVehicleUndriveable(veh, false)
+    SetVehicleDoorsLocked(veh, 1)
+    SetVehicleEngineOn(veh, true, true, false)
+
+
+    DriverPed = SpawnDriverInVehicle(veh)
+    if not DriverPed then
+        Notify('Driver IA non creato.')
+        return
+    end
+    Debug('DriverPed creato: ' .. tostring(DriverPed))
+    if not IsPedInVehicle(DriverPed, veh, false) then
+        Debug('ATTENZIONE: Il ped non è nel veicolo dopo SpawnDriverInVehicle!')
     else
-        TaskVehicleTempAction(driverPed, veh, 27, 6000)
+        Debug('Il ped è correttamente nel veicolo.')
     end
 
-    local timeout = GetGameTimer() + 20000
-    while GetGameTimer() < timeout do
-        local vpos = GetEntityCoords(veh)
-        local dist = #(vpos - vector3(tx or vpos.x, ty or vpos.y, tz or vpos.z))
-        if IsVehicleStopped(veh) and dist <= 3.5 then
-            break
-        end
-        Wait(400)
-    end
-    -- Ensure parked: brake and engine off
-    TaskVehicleTempAction(driverPed, veh, 27, 1200)
-    SetVehicleEngineOn(veh, false, true, true)
-end
-
-local function stopAutopilot(parkFirst)
-    local veh = findVehicle()
-    if parkFirst then
-        parkVehicle()
-    end
-    if driverPed and DoesEntityExist(driverPed) then
-        ClearPedTasks(driverPed)
-        if veh and DoesEntityExist(veh) then
-            TaskLeaveVehicle(driverPed, veh, 0)
-        end
-        Wait(500)
-        DeletePed(driverPed)
-    end
-    driverPed = nil
-    summoning = false
-    following = false
-end
-
--- =========================
--- MAIN AUTOPILOT LOGIC
--- =========================
-local function summonVehicle()
-    if summoning or following then
-        notify('Autopilota già attivo.')
-        return
-    end
-    pullPersonal()
-    Wait(200)
-    if not personal then
-        notify('Nessun veicolo personale registrato.')
-        return
-    end
-    local veh = findVehicle()
-    if not veh then
-        notify('Veicolo non trovato.')
-        return
-    end
-    if not takeControl(veh) then
-        notify('Impossibile ottenere il controllo del veicolo.')
-        return
-    end
-    driverPed = spawnDriver(veh)
-    if not driverPed then
-        notify('Impossibile creare il driver.')
-        return
-    end
-    summoning = true
-    notify('Il veicolo sta arrivando...')
+    ActiveSummon = true
+    Notify('Arrivo in corso…')
 
     CreateThread(function()
-        while summoning do
-            local pcoords = GetEntityCoords(PlayerPedId())
-            -- Drive towards the closest road node near the player to stay on roads
-            local found, nx, ny, nz, nheading = GetClosestVehicleNodeWithHeading(pcoords.x, pcoords.y, pcoords.z, 1, 3.0, 0)
-            if found then
-                TaskVehicleDriveToCoordLongrange(driverPed, veh, nx, ny, nz, calcDriveSpeed(veh), DRIVING_STYLE, 5.0)
-            else
-                -- Fallback to player coords if no node found
-                TaskVehicleDriveToCoordLongrange(driverPed, veh, pcoords.x, pcoords.y, pcoords.z, calcDriveSpeed(veh), DRIVING_STYLE, 5.0)
-            end
-            -- Adaptive cruise and obstacle avoidance
+        while ActiveSummon and DoesEntityExist(veh) and DoesEntityExist(DriverPed) do
+            local pped = PlayerPedId()
+            local pcoords = GetEntityCoords(pped)
+
+            -- assicurati di avere controllo e che il veicolo sia pronto
+            if not NetworkHasControlOfEntity(veh) then NetworkRequestControlOfEntity(veh); Debug('Requesting control: VEH (summon loop)') end
+            if not NetworkHasControlOfEntity(DriverPed) then NetworkRequestControlOfEntity(DriverPed); Debug('Requesting control: PED (summon loop)') end
+            SetVehicleEngineOn(veh, true, true, false)
+            SetVehicleUndriveable(veh, false)
+
+            -- finché non è vicino, guidagli addosso in maniera “stradale”
+            SetDriveTaskDrivingStyle(DriverPed, DRIVING_STYLE)
+            SetDriveTaskMaxCruiseSpeed(DriverPed, DRIVE_SPEED)
+            TaskVehicleDriveToCoordLongrange(DriverPed, veh, pcoords.x, pcoords.y, pcoords.z, DRIVE_SPEED, DRIVING_STYLE, 20.0)
+            Debug('TaskVehicleDriveToCoordLongrange assegnato: ' .. string.format('%.2f %.2f %.2f', pcoords.x, pcoords.y, pcoords.z))
+
+            -- quando è abbastanza vicino, passiamo alla modalità follow persistente
             local dist = #(pcoords - GetEntityCoords(veh))
-            local spd = adaptiveSpeed(veh, dist)
-            SetDriveTaskCruiseSpeed(driverPed, spd)
-            if vehicleAhead(veh) or obstacleAhead(veh) then
-                -- Strong early brake if obstacle detected ahead
-                SetDriveTaskCruiseSpeed(driverPed, 3.0)
-                TaskVehicleTempAction(driverPed, veh, 27, 1200) -- brake stronger/longer
-            end
-            -- Hard stop if too close
-            if dist <= 0.5 then
-                TaskVehicleTempAction(driverPed, veh, 27, 1500)
-            end
-            if #(pcoords - GetEntityCoords(veh)) <= FOLLOW_DISTANCE then
-                summoning = false
-                following = true
-                notify('Ti sto seguendo.')
-            end
-            Wait(600)
-        end
-        while following do
-            local ped = PlayerPedId()
-            if IsPedInVehicle(ped, veh, false) then
-                notify('Autopilota disattivato.')
-                stopAutopilot()
+            if dist <= SUMMON_RANGE_START_FOLLOW then
+                ActiveSummon = false
+                ActiveFollow = true
+                Notify('Ti sto seguendo rimanendo in strada.')
                 break
             end
-            local pcoords = GetEntityCoords(ped)
-            local found, nx, ny, nz, nheading = GetClosestVehicleNodeWithHeading(pcoords.x, pcoords.y, pcoords.z, 1, 3.0, 0)
-            if found then
-                TaskVehicleDriveToCoordLongrange(driverPed, veh, nx, ny, nz, calcDriveSpeed(veh), DRIVING_STYLE, 5.0)
-            else
-                TaskVehicleDriveToCoordLongrange(driverPed, veh, pcoords.x, pcoords.y, pcoords.z, calcDriveSpeed(veh), DRIVING_STYLE, 5.0)
+
+            Wait(RETASK_INTERVAL_MS)
+        end
+
+        -- FOLLOW LOOP
+        while ActiveFollow and DoesEntityExist(veh) and DoesEntityExist(DriverPed) do
+            local pped = PlayerPedId()
+
+            -- Se per qualsiasi motivo il driver è fuori, rimettilo dentro
+            if not IsPedInVehicle(DriverPed, veh, false) then
+                SetPedIntoVehicle(DriverPed, veh, -1)
+                SetPedNeverLeavesVehicle(DriverPed, true)
+                Debug('Driver was outside vehicle; warped back to driver seat')
             end
-            -- If close enough, keep speed minimal
-            local dist = #(pcoords - GetEntityCoords(veh))
-            if dist <= FOLLOW_DISTANCE then
-                TaskVehicleTempAction(driverPed, veh, 27, 1200) -- brake
+
+            -- Se sali sul veicolo → stop follow e cleanup
+            if IsPedInVehicle(pped, veh, false) then
+                Notify('Sei salito a bordo. Autopilota disattivato.')
+                ActiveFollow = false
+                StopAndDismissDriver(veh, DriverPed)
+                DriverPed = nil
+                break
             end
-            -- Adaptive cruise and obstacle avoidance
-            local spd = adaptiveSpeed(veh, dist)
-            -- Cap speed during following for safety
-            local spdCap = math.min(spd, 12.0)
-            SetDriveTaskCruiseSpeed(driverPed, spdCap)
-            if vehicleAhead(veh) or obstacleAhead(veh) then
-                SetDriveTaskCruiseSpeed(driverPed, 3.0)
-                TaskVehicleTempAction(driverPed, veh, 27, 1200)
+
+            -- assicurati di avere controllo e che il veicolo sia pronto
+            if not NetworkHasControlOfEntity(veh) then NetworkRequestControlOfEntity(veh) end
+            if not NetworkHasControlOfEntity(DriverPed) then NetworkRequestControlOfEntity(DriverPed) end
+            SetVehicleEngineOn(veh, true, true, false)
+            SetVehicleUndriveable(veh, false)
+
+            -- Insegui il player rispettando la strada
+            TaskVehicleFollow(DriverPed, veh, pped, DRIVE_SPEED, DRIVING_STYLE, FOLLOW_MIN_DISTANCE)
+            SetDriveTaskDrivingStyle(DriverPed, DRIVING_STYLE)
+            SetDriveTaskMaxCruiseSpeed(DriverPed, DRIVE_SPEED)
+
+            -- Kick se rimane fermo
+            local speed = GetEntitySpeed(veh)
+            if speed < 0.5 then
+                TaskVehicleFollow(DriverPed, veh, pped, DRIVE_SPEED, DRIVING_STYLE, FOLLOW_MIN_DISTANCE)
+                SetVehicleForwardSpeed(veh, 2.0)
+                Debug('Stuck detected (speed<0.5): reapplied follow and nudged forward')
             end
-            if dist <= 0.5 then
-                TaskVehicleTempAction(driverPed, veh, 27, 1500)
-            end
-            Wait(600)
+
+            -- Riprogramma periodicamente per “svegliarlo” se resta bloccato
+            Wait(RETASK_INTERVAL_MS)
+        end
+
+        -- Cleanup di sicurezza se qualcosa interrompe
+        if DriverPed and DoesEntityExist(DriverPed) then
+            ClearPedTasks(DriverPed)
         end
     end)
 end
 
-local function registerVehicle()
+-- =========================
+-- REGISTRAZIONE VEICOLO
+-- =========================
+local function TryRegisterCurrentVehicle()
     local ped = PlayerPedId()
     if not IsPedInAnyVehicle(ped, false) or GetPedInVehicleSeat(GetVehiclePedIsIn(ped, false), -1) ~= ped then
-        notify('Siediti al posto di guida per registrare il veicolo.')
+        Notify('Siediti al posto di guida di un veicolo per registrarlo come personale.')
         return
     end
     local veh = GetVehiclePedIsIn(ped, false)
+    if veh == 0 then
+        Notify('Veicolo non valido.')
+        return
+    end
     local netId = NetworkGetNetworkIdFromEntity(veh)
     local plate = GetVehicleNumberPlateText(veh) or 'N/A'
+    SetNetworkIdCanMigrate(netId, true)
+    SetEntityAsMissionEntity(veh, true, false)
     TriggerServerEvent('autopilot:registerPersonal', netId, plate)
-    personal = { netId = netId, plate = plate }
-    notify(('Veicolo %s registrato.'):format(plate))
+    Personal = { netId = netId, plate = plate }
 end
 
-RegisterCommand('autopilot', function(source, args, raw)
-    pullPersonal()
-    Wait(200)
-    if personal then
-        summonVehicle()
+-- =========================
+-- INPUT / KEYBIND
+-- =========================
+RegisterCommand('autopilot', function()
+    PullPersonalSync()
+    Wait(120)
+    if not Personal then
+        -- prova a registrare
+        TryRegisterCurrentVehicle()
     else
-        registerVehicle()
+        -- richiama
+        SummonVehicleToPlayer()
     end
 end, false)
 
--- Open ESX default menu instead of custom NUI
-local function openMenu()
-    -- Define menu items mapped to existing commands
-    local elements = {
-        { label = 'Summon', value = 'autopilot' },
-        { label = 'Stop & Park', value = 'autopilot_stop' },
-        { label = 'Park', value = 'autopilot_park' },
-        { label = 'Clear', value = 'autopilot_clear' },
-    }
+-- Permette il remap in game (Impostazioni → Key Bindings)
+RegisterKeyMapping('autopilot', 'Autopilota: registra/chiama veicolo personale', 'keyboard', KEY_DEFAULT)
 
-    if ESX and ESX.UI and ESX.UI.Menu then
-        ESX.UI.Menu.CloseAll()
-        ESX.UI.Menu.Open('default', GetCurrentResourceName(), 'autopilot_menu', {
-            title = 'Autopilota',
-            align = 'top-left',
-            elements = elements,
-        }, function(data, menu)
-            local cmd = data.current and data.current.value
-            if cmd then
-                ExecuteCommand(cmd)
-            end
-        end, function(data, menu)
-            menu.close()
-        end)
-    else
-        -- Fallback: execute the primary action if ESX menu is unavailable
-        ExecuteCommand('autopilot')
-        notify('ESX menu non disponibile, eseguo Summon come fallback.')
-    end
-end
+-- Fallback comando per forzare solo summon (se vuoi)
+RegisterCommand('autopilot_summon', function()
+    SummonVehicleToPlayer()
+end)
 
-RegisterCommand('autopilot_menu', function(source, args, raw)
-    openMenu()
-end, false)
+-- Toggle debug logging
+RegisterCommand('autopilot_debug', function(source, args, raw)
+    local onoff = args and args[1]
+    if onoff == 'on' then DebugEnabled = true
+    elseif onoff == 'off' then DebugEnabled = false
+    else DebugEnabled = not DebugEnabled end
+    local status = DebugEnabled and 'ON' or 'OFF'
+    Notify(('Debug: %s'):format(status))
 
-RegisterKeyMapping('autopilot_menu', 'Menu Autopilota', 'keyboard', MENU_KEY)
-
-RegisterCommand('autopilot_stop', function(source, args, raw)
-    stopAutopilot(true)
-    notify('Autopilota fermato e veicolo parcheggiato.')
-end, false)
-
-RegisterCommand('autopilot_park', function(source, args, raw)
-    parkVehicle()
-    stopAutopilot()
-    notify('Veicolo parcheggiato.')
-end, false)
-
-RegisterCommand('autopilot_clear', function(source, args, raw)
-    stopAutopilot()
-    personal = nil
-    TriggerServerEvent('autopilot:clearPersonal')
-    if vehicleBlip and DoesBlipExist(vehicleBlip) then
-        RemoveBlip(vehicleBlip)
-        vehicleBlip = nil
-    end
-    notify('Veicolo personale resettato.')
-end, false)
-
--- Removed custom NUI callbacks; using ESX default menu
-
--- Maintain a blip on the personal vehicle if it exists (persistent)
-CreateThread(function()
-    local lastSeen = 0
-    local lastCoords = nil
-    local vanishTimeout = 15000 -- kept for reference; we no longer use it to remove the blip
-    local lastReq = 0
-    while true do
-        local now = GetGameTimer()
-        local veh = personal and findVehicle() or 0
-
-        if veh ~= 0 and DoesEntityExist(veh) then
-            -- Ensure blip exists and is attached to entity
-            if not vehicleBlip or not DoesBlipExist(vehicleBlip) then
-                vehicleBlip = AddBlipForEntity(veh)
-                SetBlipSprite(vehicleBlip, 225) -- car
-                SetBlipAsFriendly(vehicleBlip, true)
-                SetBlipScale(vehicleBlip, 0.8)
-                SetBlipHighDetail(vehicleBlip, true)
-                SetBlipDisplay(vehicleBlip, 6)
-                SetBlipPriority(vehicleBlip, 10)
-                BeginTextCommandSetBlipName('STRING')
-                AddTextComponentSubstringPlayerName('Veicolo')
-                EndTextCommandSetBlipName(vehicleBlip)
-            end
-            -- Update coordinates and last seen
-            local vcoords = GetEntityCoords(veh)
-            lastCoords = vcoords
-            lastSeen = now
-            if vehicleBlip and DoesBlipExist(vehicleBlip) then
-                SetBlipCoords(vehicleBlip, vcoords.x, vcoords.y, vcoords.z)
-            end
-            -- Update lastState for smoother predictions if needed
-            local vx, vy, vz = table.unpack(GetEntityVelocity(veh))
-            local heading = GetEntityHeading(veh)
-            lastState = {
-                x = vcoords.x, y = vcoords.y, z = vcoords.z,
-                heading = heading,
-                vx = vx, vy = vy, vz = vz,
-                lastSeen = now,
-                receivedAt = now,
-            }
+    if DebugEnabled then
+        local veh = Personal and NetworkGetEntityFromNetworkId(Personal.netId or -1)
+        if veh and veh ~= 0 and DoesEntityExist(veh) then
+            Debug(('veh exists=%s, engine=%s, speed=%.2f'):format(tostring(DoesEntityExist(veh)), tostring(GetIsVehicleEngineRunning(veh)), GetEntitySpeed(veh)))
         else
-            -- Vehicle momentarily not found (streaming/despawn). Keep blip for a bit.
-            local recentlySeen = (now - lastSeen) <= vanishTimeout
-            -- Periodically request server state to keep simulation fresh
-            if now - lastReq > 2000 then
-                TriggerServerEvent('autopilot:getVehState')
-                lastReq = now
-            end
-            if lastState then
-                local pred = predictFromState(lastState, now)
-                if pred then
-                    lastCoords = vector3(pred.x, pred.y, pred.z)
-                    lastSeen = now -- we simulate continuously
-                end
-            end
-            -- Make blip persistent: if we have any coords (recent or predicted), keep showing
-            if ((recentlySeen or lastState) and lastCoords) or lastCoords then
-                if not vehicleBlip or not DoesBlipExist(vehicleBlip) then
-                    -- Recreate a free blip at last known coords
-                    vehicleBlip = AddBlipForCoord(lastCoords.x, lastCoords.y, lastCoords.z)
-                    SetBlipSprite(vehicleBlip, 225)
-                    SetBlipAsFriendly(vehicleBlip, true)
-                    SetBlipScale(vehicleBlip, 0.8)
-                    SetBlipHighDetail(vehicleBlip, true)
-                    SetBlipDisplay(vehicleBlip, 6)
-                    SetBlipPriority(vehicleBlip, 10)
-                    BeginTextCommandSetBlipName('STRING')
-                    AddTextComponentSubstringPlayerName('Veicolo')
-                    EndTextCommandSetBlipName(vehicleBlip)
-                else
-                    SetBlipCoords(vehicleBlip, lastCoords.x, lastCoords.y, lastCoords.z)
-                end
-            else
-                -- If no data available yet, keep trying without removing existing blip
-                -- Only remove blip if personal entry is cleared elsewhere
-            end
+            Debug('No vehicle entity found for current Personal')
         end
+    end
+end, false)
 
-        Wait(300)
+-- Comando per fermare follow/summon e ripulire il driver
+RegisterCommand('autopilot_stop', function()
+    local veh = Personal and NetworkGetEntityFromNetworkId(Personal.netId or -1)
+    if ActiveFollow or ActiveSummon then
+        ActiveFollow = false
+        ActiveSummon = false
+        if veh and DoesEntityExist(veh) and DriverPed and DoesEntityExist(DriverPed) then
+            StopAndDismissDriver(veh, DriverPed)
+        end
+        DriverPed = nil
+        Notify('Autopilota fermato.')
+    else
+        Notify('Nessun autopilota attivo.')
     end
 end)
 
--- On resource start, pull personal and last server state so the blip can appear immediately
-CreateThread(function()
-    Wait(1000)
-    pullPersonal()
-    Wait(200)
-    TriggerServerEvent('autopilot:getVehState')
-end)
-
--- Periodically push vehicle state to server for persistence/simulation
-CreateThread(function()
-    while true do
-        if personal then
-            local veh = findVehicle()
-            if veh ~= 0 and DoesEntityExist(veh) then
-                local vcoords = GetEntityCoords(veh)
-                local heading = GetEntityHeading(veh)
-                local vx, vy, vz = table.unpack(GetEntityVelocity(veh))
-                local plate = personal and personal.plate or nil
-                if plate and plate ~= '' then
-                    TriggerServerEvent('autopilot:updateVehState', plate, vcoords.x, vcoords.y, vcoords.z, heading, vx, vy, vz, GetGameTimer())
-                end
-            end
-        end
-        Wait(500)
-    end
+-- Comando per resettare il personale
+RegisterCommand('autopilot_clear', function()
+    Personal = nil
+    TriggerServerEvent('autopilot:clearPersonal')
+    Notify('Veicolo personale resettato.')
 end)
