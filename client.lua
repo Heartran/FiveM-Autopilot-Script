@@ -204,6 +204,16 @@ local function StopAndDismissDriver(veh, ped)
         return
     end
 
+    -- Assicurati di avere il controllo di rete su veicolo e ped
+    if not NetworkHasControlOfEntity(veh) and not TakeControl(veh) then
+        print('Errore: Nessun controllo sul veicolo (StopAndDismissDriver).')
+        return
+    end
+    if not NetworkHasControlOfEntity(ped) and not TakeControl(ped) then
+        print('Errore: Nessun controllo sul ped (StopAndDismissDriver).')
+        return
+    end
+
     -- Funzione helper: richiedi spot di parcheggio (ibrido client->server)
     local function RequestParkSpot(entity, cb)
         -- Prova locale: se esiste una funzione calcParkSpotNear la usiamo (assunzione ragionevole)
@@ -217,6 +227,8 @@ local function StopAndDismissDriver(veh, ped)
         if ok and tx and ty and tz and thead then
             cb({x = tx, y = ty, z = tz, heading = thead, source = 'client-local'})
             return
+        else
+            print('calcParkSpotNear non ha restituito un nodo valido, ricorro al server/fallback.')
         end
 
         -- Fallback semplice client-side: manda richiesta al server
@@ -246,6 +258,7 @@ local function StopAndDismissDriver(veh, ped)
                 responded = true
                 -- fallback finale: usa posizione corrente del veicolo
                 cb({x = vx, y = vy, z = vz, heading = vheading, source = 'client-fallback'})
+                print('Timeout richiesta parkSpot: uso fallback client.')
             end
         end)
     end
@@ -259,6 +272,11 @@ local function StopAndDismissDriver(veh, ped)
 
         local tx, ty, tz = spot.x, spot.y, spot.z
         local thead = spot.heading or GetEntityHeading(veh)
+        if not tx or not ty or not tz then
+            print('Spot di parcheggio non valido; uso posizione corrente del veicolo.')
+            tx, ty, tz = table.unpack(GetEntityCoords(veh))
+            thead = GetEntityHeading(veh)
+        end
         print(("Nodo parcheggio (%s) - x: %s, y: %s, z: %s, heading: %s"):format(tostring(spot.source), tx, ty, tz, thead))
 
         -- Piccolo freno iniziale
@@ -555,3 +573,77 @@ RegisterCommand('autopilot_clear', function()
     TriggerServerEvent('autopilot:clearPersonal')
     Notify('Veicolo personale resettato.')
 end)
+
+-- =========================
+-- MENU (F4)
+-- =========================
+local MenuOpen = false
+local MenuIndex = 1
+local MenuOptions = {
+    {label = 'Registra o chiama veicolo', action = function()
+        ExecuteCommand('autopilot')
+    end},
+    {label = 'Ferma autopilota', action = function()
+        ExecuteCommand('autopilot_stop')
+    end},
+    {label = 'Reset veicolo personale', action = function()
+        ExecuteCommand('autopilot_clear')
+    end},
+    {label = 'Debug on/off', action = function()
+        ExecuteCommand('autopilot_debug')
+    end}
+}
+
+local function DrawMenu()
+    local w, h = 0.23, 0.035
+    local x, y = 0.78, 0.30
+    -- sfondo
+    DrawRect(x, y, w, h * (#MenuOptions + 1), 0, 0, 0, 150)
+    for i, opt in ipairs(MenuOptions) do
+        local rowY = y - h * (#MenuOptions / 2) + h * i
+        if i == MenuIndex then
+            SetTextColour(255, 255, 255, 255)
+        else
+            SetTextColour(200, 200, 200, 255)
+        end
+        SetTextFont(0)
+        SetTextScale(0.0, 0.35)
+        SetTextProportional(1)
+        SetTextEntry('STRING')
+        AddTextComponentSubstringPlayerName((i == MenuIndex and '> ' or '  ') .. opt.label)
+        DrawText(x - w/2 + 0.005, rowY - h/2 + 0.005)
+    end
+end
+
+CreateThread(function()
+    while true do
+        if MenuOpen then
+            DisableAllControlActions(0)
+            if IsControlJustPressed(0, 172) then -- up
+                MenuIndex = MenuIndex - 1
+                if MenuIndex < 1 then MenuIndex = #MenuOptions end
+            end
+            if IsControlJustPressed(0, 173) then -- down
+                MenuIndex = MenuIndex + 1
+                if MenuIndex > #MenuOptions then MenuIndex = 1 end
+            end
+            if IsControlJustPressed(0, 176) then -- enter
+                local opt = MenuOptions[MenuIndex]
+                if opt and opt.action then opt.action() end
+                MenuOpen = false
+            end
+            if IsControlJustPressed(0, 177) then -- backspace
+                MenuOpen = false
+            end
+            DrawMenu()
+        end
+        Wait(0)
+    end
+end)
+
+RegisterCommand('autopilot_menu', function()
+    MenuOpen = not MenuOpen
+    MenuIndex = 1
+end)
+
+RegisterKeyMapping('autopilot_menu', 'Autopilota: apri menu', 'keyboard', 'F4')
